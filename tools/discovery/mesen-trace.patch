@@ -1,0 +1,45 @@
+diff --git a/Core/MemoryManager.cpp b/Core/MemoryManager.cpp
+index 80c9e43..83bceb2 100644
+--- a/Core/MemoryManager.cpp
++++ b/Core/MemoryManager.cpp
+@@ -4,6 +4,16 @@
+ #include "BaseMapper.h"
+ #include "CheatManager.h"
+ #include "Console.h"
++#include "CPU.h"
++#include "PPU.h"
++#include <cstdio>
++#include <cstdlib>
++FILE* g_nesTrace = getenv("NESTRACE") ? fopen(getenv("NESTRACE"), "wb") : nullptr; int g_traceMode = 0;
++static inline void TraceRec(char t, uint16_t addr, uint8_t v, int32_t abs, uint32_t cyc, uint32_t fr) {
++	if(!g_nesTrace) return;
++	struct { char t; uint8_t v; uint16_t a; int32_t abs; uint32_t cyc; uint32_t fr; } r = {t, v, addr, abs, cyc, fr};
++	fwrite(&r, sizeof(r), 1, g_nesTrace);
++}
+ 
+ MemoryManager::MemoryManager(std::shared_ptr<Console> console)
+ {
+@@ -124,12 +134,22 @@ uint8_t MemoryManager::Read(uint16_t addr, MemoryOperationType operationType)
+ 	_console->GetCheatManager()->ApplyCodes(addr, value);
+ 
+ 	_openBusHandler.SetOpenBus(value);
+-
++	if(g_nesTrace) {
++		if(operationType == MemoryOperationType::ExecOpCode) {
++			int32_t a = (addr >= 0x8000) ? _mapper->ToAbsoluteAddress(addr) : -1;
++			TraceRec('X', addr, value, a, _console->GetCpu()->GetCycleCount(), _console->GetPpu()->GetFrameCount());
++		} else if(addr >= 0x2000 && addr < 0x8000 && operationType == MemoryOperationType::Read) {
++			TraceRec('R', addr, value, -1, _console->GetCpu()->GetCycleCount(), _console->GetPpu()->GetFrameCount());
++		}
++	}
+ 	return value;
+ }
+ 
+ void MemoryManager::Write(uint16_t addr, uint8_t value, MemoryOperationType operationType)
+ {
++	if(g_nesTrace && addr >= 0x2000 && operationType == MemoryOperationType::Write) {
++		TraceRec('W', addr, value, -1, _console->GetCpu()->GetCycleCount(), _console->GetPpu()->GetFrameCount());
++	}
+ 	_ramWriteHandlers[addr]->WriteRAM(addr, value);
+ 	_openBusHandler.SetOpenBus(value);
+ }

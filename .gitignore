@@ -1,0 +1,9 @@
+*.nes
+*.rom
+*.zip
+*.trc
+*.io
+*.vid
+*.pcm
+*.adf
+build/

@@ -1,0 +1,5 @@
+static closure from dynamically seen entries: instructions 17047 bytes 36173 of 131072
+control transfers into RAM/IO space (<8000): ['0x0', '0x1018', '0x12a9', '0x12c6', '0x18a9', '0x19a9', '0x2020', '0x2057', '0x20ac', '0x20d8', '0x20f', '0x220', '0x304', '0x38ac', '0x4152', '0x420', '0x4900', '0x5fe', '0x7fac', '0x7fef']
+undecodable (illegal opcode) reached: 341 [(6, '0x9800'), (4, '0x9800'), (3, '0x9800'), (2, '0x9804'), (0, '0x9800'), (1, '0xaff5'), (1, '0xaf8d'), (1, '0xaec6'), (3, '0xb35c'), (2, '0xb35f')]
+indirect jump sites in closure: [(0, '0x833b'), (7, '0xc212'), (7, '0xc246'), (7, '0xc66a'), (7, '0xc80e'), (7, '0xc82e'), (7, '0xc860')]
+code bytes per bank [(0, 3398), (1, 3532), (2, 2405), (3, 152), (4, 1605), (5, 2094), (6, 13060), (7, 9927)]
