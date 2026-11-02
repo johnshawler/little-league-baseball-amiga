@@ -101,7 +101,7 @@ every `$2000+` read and write is logged with the CPU cycle and frame number. Run
 
 ## 5. Assumptions (defaults used; change any of them and I will re-check what depends on it)
 1. Target: **Amiga 1200**, 68EC020, AGA, 2 MB chip RAM, no fast RAM, Kickstart 3.1; tested in **FS-UAE** only (nothing on real hardware).
-2. Both **PAL and NTSC** Amigas. The game logic is tied to 60.0988 Hz; on PAL the display is 50 Hz. Default: run the game clock at the NES rate from a timer and **skip display frames** (about 1 in 6 on PAL) so game and sound speed stay 100 %. Alternative (not default): drive the PAL machine in 60 Hz NTSC timing (BEAMCON0).
+2. Both **PAL and NTSC** Amigas. Game clock at the NES rate from a timer; on PAL display frames are skipped (about 1 in 6) so game and sound speed stay 100 % (confirmed by the user, §8).
 3. Controls: joystick in **port 2** = D-pad + fire = **A**, second button = **B**; **Enter = Start**; **Select = Space** (not specified; change if you like). Player 2 (the game has a 2P mode) on joystick port 1 with the same mapping; Start/Select for P2 shared with the keyboard keys.
 4. "Full fidelity": exact NES palette entries (no colour reduction), all 240 lines if the Amiga mode fits (PAL: yes; NTSC: to be measured, fall back to the largest visible window, no vertical scaling); sound: full-length, lossless, highest Paula rate sustainable.
 5. Reference timing = NTSC NES (the cart is an NTSC release).
@@ -126,6 +126,7 @@ I do not find a reason to stop: the plan is feasible, with speed on saturated fr
 * PAL/NTSC Amiga display geometry for 240 lines (to be measured in FS-UAE).
 * Real hardware: nothing.
 
-## 8. Questions for you
-None are blockers: all unknowns above have a default. The ones where a different answer would change work:
-1. **Select button**: Space acceptable? 2. **PAL**: frame-skipping at 50 Hz acceptable, or do you prefer a 60 Hz NTSC-timing mode on PAL machines? 3. **MAME**: do you want it built as a second oracle (long build) or is Mesen enough?
+## 8. Decisions (answered by the user)
+1. Select = Space: accepted.
+2. PAL machines: run the game clock at the NES rate (60.0988 Hz) and skip display frames at 50 Hz (no 60 Hz NTSC-timing mode).
+3. Reference emulator: Mesen is enough; MAME will not be built. Behavioural claims stay "checked only against Mesen".
