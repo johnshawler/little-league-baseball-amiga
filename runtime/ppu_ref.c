@@ -246,3 +246,6 @@ void ppu_reg_write(Nes *n, uint16_t a, uint8_t v){
         p->v=(uint16_t)(p->v+p->vinc); break;
     }
 }
+
+/* lazy synchronisation used by the runtime: run the per-dot model until `dots` dots have been executed.  Returns via nes.ppu.dots. */
+void ppu_sync(Nes *n, uint64_t dots){ while(n->ppu.dots<dots) ppu_step(n); }

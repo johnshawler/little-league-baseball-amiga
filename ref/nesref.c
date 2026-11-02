@@ -14,7 +14,7 @@ static FILE *trc;
 static Cpu6502 cpu;
 static int need_nmi, prev_need_nmi, prev_nmi_flag, need_halt, dma_on, dma_page;
 static uint8_t openbus; static int op_fetch;
-static long frames_done;
+static long frames_done; static FILE *fbf;
 static unsigned script_mask(void);
 static uint8_t *rom_prg, *rom_chr;
 
@@ -28,7 +28,7 @@ static void end_cycle(void){
     prev_need_nmi=need_nmi;
     if(!prev_nmi_flag && nes.ppu.nmi_level) need_nmi=1;
     prev_nmi_flag=nes.ppu.nmi_level;
-    if(nes.ppu.line==nes.ppu.line && nes.ppu.frame_done){ nes.ppu.frame_done=0; frames_done++; }
+    if(nes.ppu.frame_done){ nes.ppu.frame_done=0; if(fbf){ fwrite(&frames_done,sizeof frames_done,1,fbf); fwrite(nes.ppu.fb,2,240*256,fbf);} frames_done++; }
 }
 void nes_input_poll(void){
     unsigned m=script_mask(); uint8_t b=0;           /* libretro ids: B0 Sel2 St3 U4 D5 L6 R7 A8 ; report order A B Sel Start U D L R */
@@ -90,7 +90,7 @@ int main(int argc,char**argv){
     uint8_t*d=malloc(sz); if(fread(d,1,sz,f)!=(size_t)sz) return 1; fclose(f);
     rom_prg=d+16; rom_chr=d+16+131072; nes.map.prg=rom_prg; nes.map.chr=rom_chr;
     long nf=atol(argv[2]); FILE*sc=fopen(argv[3],"r"); while(sc&&fscanf(sc,"%ld %x",&sf[ns],&sm[ns])==2) ns++;
-    if(argc>4) trc=fopen(argv[4],"wb");
+    if(argc>4 && strcmp(argv[4],"-")) trc=fopen(argv[4],"wb"); if(getenv("FBDUMP")) fbf=fopen(getenv("FBDUMP"),"wb");
     memset(nes.ram,0,sizeof nes.ram); ppu_reset(&nes.ppu); mmc1_reset(&nes.map);
     cpu_reset(&cpu);
     int idots=getenv("IDOTS")?atoi(getenv("IDOTS")):2; for(int i=0;i<idots;i++) ppu_step(&nes);
