@@ -22,7 +22,7 @@ static void vram_write(Nes *n, uint16_t a, uint8_t v){
     if((i&3)==0){ P->pal[i&0x0F]=v; P->pal[(i&0x0F)|0x10]=v; } else P->pal[i]=v;
 }
 
-void ppu_reset(Ppu *p){ memset(p,0,sizeof *p); p->line=-1; p->cx=340; p->frame=1; p->min_bg=300; p->min_sp=300; p->min_sp_std=300; }
+void ppu_reset(Ppu *p){ memset(p,0,sizeof *p); p->draw=1; p->line=-1; p->cx=340; p->frame=1; p->min_bg=300; p->min_sp=300; p->min_sp_std=300; }
 
 static void inc_x(Ppu*p){ uint16_t a=p->v; if((a&0x1F)==31) a=(a&~0x1F)^0x400; else a++; p->v=a; }
 static void inc_y(Ppu*p){
@@ -132,7 +132,7 @@ static void draw_pixel(Nes *n){
     if(p->rend || (p->v&0x3F00)!=0x3F00){ c=pixel_color(p); idx=(c&3)?c:0; }
     else { idx=p->v&0x1F; (void)pixel_color(p); }
     uint8_t col=p->pal[idx];
-    p->fb[(p->line<<8)+p->cx-1]=FBVAL(col&(p->gray?0x30:0x3F),p->emph);
+    if(p->draw) p->fb[(p->line<<8)+p->cx-1]=FBVAL(col&(p->gray?0x30:0x3F),p->emph);
 }
 
 static void process_scanline(Nes *n){
@@ -277,46 +277,94 @@ static int eval_sprites_fast(Nes*n,int y,FSpr*sp,int*s0,int*ovf){
     return cnt;
 }
 long ppu_fast_lines;
+static uint32_t expn[16];       /* 4 pattern bits -> 4 bytes of 0/1 (first pixel in the top byte) */
+static int expn_ready;
+static int line_hit_cx(Nes*n,int y,uint16_t vline);
 static void render_line_fast(Nes*n,int y,uint16_t vline){
-    Ppu*p=P; ppu_fast_lines++; __typeof__(p->fb[0])*row=&p->fb[y<<8];
+    Ppu*p=P; ppu_fast_lines++;
     uint8_t emph=p->emph; uint8_t gm=p->gray?0x30:0x3F;
+    if(!p->draw){
+        /* picture not displayed: only the state effects of the line (sprite overflow, sprite-0 hit) - no pixel is computed or stored */
+        if(!p->rend) return;
+        int cnt=0,s0=0,L=y-1,h=p->large?16:8;
+        if(L>=0){
+            for(int i=0;i<64;i++){ int sy=p->oam[i<<2]; if(!(L>=sy && L<sy+h)) continue; if(cnt==8) break; if(i==0) s0=1; cnt++; }
+            if(cnt==8){ int more=0; for(int i=0;i<64;i++){ int sy=p->oam[i<<2]; if(L>=sy && L<sy+h) more++; } if(more>8){
+                int sl=p->line,sc=p->cx; p->line=y-1; p->oamaddr=0; for(int cx=1;cx<=256;cx++){ p->cx=cx; sprite_eval(n); } p->line=sl; p->cx=sc; p->oamaddr=0; } }
+        }
+        if(s0 && !p->sp0hit && line_hit_cx(n,y,vline)) p->sp0hit=1;
+        return;
+    }
+    __typeof__(p->fb[0])*row=&p->fb[y<<8]; const __typeof__(p->fb[0]) EM=FBVAL(0,emph);
     if(!p->rend){
         int idx= ((p->v&0x3F00)!=0x3F00) ? 0 : (p->v&0x1F);
-        __typeof__(p->fb[0]) c=FBVAL(p->pal[idx]&gm,emph); for(int x=0;x<256;x++) row[x]=c; return;
+        __typeof__(p->fb[0]) c8=FBVAL(p->pal[idx]&gm,emph);
+#ifdef PPU_FB8
+        uint32_t c=c8*0x01010101u; uint32_t*r32=(uint32_t*)row; for(int x=0;x<64;x++) r32[x]=c;
+#else
+        for(int x=0;x<256;x++) row[x]=c8;
+#endif
+        return;
     }
-    /* background tiles of this line: tile j (0..32) uses the nametable column (coarse X0 + j) */
-    uint8_t tlo[34],thi[34],tpal[34];
-    uint16_t va=vline;
+    if(!expn_ready){ for(int k=0;k<16;k++) expn[k]=((k>>3)&1)<<24|((k>>2)&1)<<16|((k>>1)&1)<<8|(k&1); expn_ready=1; }
+    /* nametable / pattern sources */
+    const uint8_t*ntp[4]; for(int k=0;k<4;k++) ntp[k]=p->nt+nt_off(&n->map,(uint16_t)(0x2000+k*0x400));
+    const uint8_t*chrlo=n->map.chr+n->map.chr_lo, *chrhi=n->map.chr+n->map.chr_hi;
+    /* background: 33 tiles -> 264 raw pixel values (0..3) in bgraw, palette-mapped colours in bgc */
+    uint8_t bgraw[272] __attribute__((aligned(4))), bgc[272] __attribute__((aligned(4)));
+    uint16_t va=vline; uint16_t pb=p->bgpat; uint8_t pal0=(uint8_t)(p->pal[0]&gm);
+    uint32_t*raw32=(uint32_t*)bgraw; uint32_t*c32=(uint32_t*)bgc;
     for(int j=0;j<33;j++){
-        uint8_t ti=vram_read(n,0x2000|(va&0x0FFF));
+        const uint8_t*nt=ntp[(va>>10)&3];
+        uint8_t ti=nt[va&0x3FF];
+        uint8_t at=nt[0x3C0|((va>>4)&0x38)|((va>>2)&7)];
         uint8_t sh=((va>>4)&4)|(va&2);
-        tpal[j]=(uint8_t)(((vram_read(n,0x23C0|(va&0x0C00)|((va>>4)&0x38)|((va>>2)&7))>>sh)&3)<<2);
-        uint16_t ta=(uint16_t)((ti<<4)|(va>>12)|p->bgpat);
-        tlo[j]=vram_read(n,ta); thi[j]=vram_read(n,ta+8);
+        uint8_t pbase=(uint8_t)(((at>>sh)&3)<<2);
+        uint16_t ta=(uint16_t)((ti<<4)|(va>>12)|pb);
+        const uint8_t*cp=(ta<0x1000?chrlo:chrhi)+(ta&0xFFF);
+        uint8_t lo=cp[0], hi=cp[8];
+        uint32_t r0=expn[lo>>4]|(expn[hi>>4]<<1), r1=expn[lo&15]|(expn[hi&15]<<1);
+        raw32[2*j]=r0; raw32[2*j+1]=r1;
+        uint8_t m1=(uint8_t)(p->pal[pbase+1]&gm), m2=(uint8_t)(p->pal[pbase+2]&gm), m3=(uint8_t)(p->pal[pbase+3]&gm);
+        for(int h=0;h<2;h++){ uint32_t r=h?r1:r0; uint32_t o=0;
+            for(int k=0;k<4;k++){ unsigned v=(r>>(24-8*k))&3; o=(o<<8)|(v==0?pal0:v==1?m1:v==2?m2:m3); }
+            c32[2*j+h]=o; }
         if((va&0x1F)==31) va=(uint16_t)((va&~0x1F)^0x400); else va++;
     }
-    FSpr sp[8]; int s0,ovf; int cnt=eval_sprites_fast(n,y,sp,&s0,&ovf);
-    if(ovf){ /* more than 8 sprites in range: the overflow flag follows the hardware's buggy evaluation, which only the per-dot model reproduces */
-        int sl=p->line,sc=p->cx; p->line=y-1; p->oamaddr=0; for(int cx=1;cx<=256;cx++){ p->cx=cx; sprite_eval(n); } p->line=sl; p->cx=sc; p->oamaddr=0; }
     int fx=p->fx;
-    for(int x=0;x<256;x++){
-        int cx=x+1; uint8_t bgc=0, spbg=0; int j=(x+fx)>>3, b=7-((x+fx)&7);
-        if(cx>p->min_bg){ spbg=(uint8_t)(((tlo[j]>>b)&1)|(((thi[j]>>b)&1)<<1)); bgc=spbg; }
-        uint8_t col=(uint8_t)(tpal[j]+bgc);
-        if(cnt && cx>p->min_sp){
-            for(int i=0;i<cnt;i++){
-                int sh=cx-sp[i].x-1;
-                if(sh>=0&&sh<8){
-                    uint8_t sc= sp[i].hflip ? (uint8_t)(((sp[i].lo>>sh)&1)|(((sp[i].hi>>sh)&1)<<1)) : (uint8_t)((((sp[i].lo<<sh)&0x80)>>7)|(((sp[i].hi<<sh)&0x80)>>6));
-                    if(sc){
-                        if(i==0 && spbg && s0 && cx!=256 && p->bg_en && !p->sp0hit && cx>p->min_sp_std) p->sp0hit=1;
-                        if(p->sp_en && (bgc==0 || !sp[i].bgprio)) col=(uint8_t)(sp[i].paloff+sc);
-                        break;
-                    }
-                }
+    /* left-edge clipping of the background: pixel x is visible iff x+1 > min_bg */
+    int mb=p->min_bg; int clipn= mb>256?256:mb;
+    if(!p->bg_en) clipn=256;
+    __typeof__(p->fb[0])*d=row;
+    {   const uint8_t*src=bgc+fx;
+#ifdef PPU_FB8
+        uint32_t em4=EM*0x01010101u; for(int x=0;x<256;x+=4){ uint32_t v; __builtin_memcpy(&v,src+x,4); v|=em4; __builtin_memcpy(d+x,&v,4); }
+#else
+        for(int x=0;x<256;x++) d[x]=(uint16_t)(src[x]|EM);
+#endif
+    }
+    for(int x=0;x<clipn;x++){ d[x]=(__typeof__(d[0]))(pal0|EM); }
+    uint8_t*rawb=bgraw+fx; (void)rawb;
+    /* sprites */
+    FSpr sp[8]; int s0,ovf; int cnt=eval_sprites_fast(n,y,sp,&s0,&ovf);
+    if(ovf){ int sl=p->line,sc=p->cx; p->line=y-1; p->oamaddr=0; for(int cx=1;cx<=256;cx++){ p->cx=cx; sprite_eval(n); } p->line=sl; p->cx=sc; p->oamaddr=0; }
+    if(cnt){
+        uint8_t claim[256]; for(int x=0;x<256;x+=4) *(uint32_t*)&claim[x]=0;
+        for(int i=0;i<cnt;i++){
+            int sx=sp[i].x; uint8_t lo=sp[i].lo,hi=sp[i].hi;
+            if(!(lo|hi)) continue;
+            for(int k=0;k<8;k++){
+                int x=sx+k; if(x>255) break;
+                if(x<p->min_sp) continue;                       /* cx = x+1 > min_sp */
+                uint8_t sc= sp[i].hflip ? (uint8_t)(((lo>>k)&1)|(((hi>>k)&1)<<1)) : (uint8_t)(((lo>>(7-k))&1)|(((hi>>(7-k))&1)<<1));
+                if(!sc || claim[x]) continue;
+                claim[x]=1;
+                uint8_t braw = (x>=clipn) ? bgraw[x+fx] : 0;    /* background value seen by the PPU (0 inside the clipped area / bg disabled) */
+                if(!p->bg_en) braw=0;
+                if(i==0 && braw && s0 && x!=255 && p->bg_en && !p->sp0hit && (x+1)>p->min_sp_std) p->sp0hit=1;
+                if(p->sp_en && (braw==0 || !sp[i].bgprio)) d[x]=FBVAL(p->pal[sp[i].paloff+sc]&gm,emph);
             }
         }
-        row[x]=FBVAL(p->pal[(col&3)?col:0]&gm,emph);
     }
 }
 /* make the pipeline state identical to the per-dot model after dot 340 of line ycomplete (rendering on); vline = v at output start of that line */
@@ -347,6 +395,16 @@ void ppu_sync_fast(Nes *n, uint64_t dots){
         }
         ppu_step(n);
     }
+}
+/* vertical blank without events: from the end of line L (cx 340, 241 <= L <= 259) whole lines up to line 260 pass without any observable event
+ * (the vblank flag is set at (241,1), input is polled at the start of 241, the frame ends at the start of 240, line 261 -> -1 is not skipped); returns the
+ * number of dots skipped (a multiple of 341) or 0 */
+uint64_t ppu_skip_vbl(Nes*n, uint64_t dots){
+    Ppu*p=P;
+    if(p->cx!=340||p->line<241||p->line>259||p->rend!=p->rend_prev||p->need_update||p->upd_delay||dots<=p->dots) return 0;
+    int m=(int)((dots-p->dots)/341); if(m>260-p->line) m=260-p->line;
+    if(m<1) return 0;
+    p->dots+=341ull*m; p->line+=m; return 341ull*m;
 }
 /* ---- prediction used to skip polling loops ---------------------------------------------------------------------------------------- */
 /* first column (cx 1..256) at which sprite 0 hits the background on line y, or 0; vline = v at the output start of the line */

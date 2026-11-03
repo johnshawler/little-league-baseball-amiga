@@ -35,6 +35,7 @@ void nes_input_poll(void){
     nes.joy[0]=b0; nes.joy[1]=b1;
 }
 
+uint64_t ppu_skip_vbl(Nes*n, uint64_t dots);
 int rt_fast_ppu=1;     /* use the line renderer for whole idle visible lines (identical results; set 0 to force the per-dot model) */
 static void rt_sync(uint64_t dots){
     Ppu*p=&nes.ppu;
@@ -43,6 +44,7 @@ static void rt_sync(uint64_t dots){
             int m=(int)((dots-p->dots)/341); if(m>239-p->line) m=239-p->line;
             ppu_sync_fast(&nes,p->dots+341ull*m); continue;
         }
+        if(rt_fast_ppu && p->cx==340 && p->line>=241 && dots-p->dots>=341 && ppu_skip_vbl(&nes,dots)) continue;
         uint8_t before=p->nmi_level; ppu_step(&nes);
         if(p->nmi_level!=before) q_push(sample_cycle_for_dots(p->dots), 2*p->dots, p->nmi_level);
         if(p->frame_done){ p->frame_done=0; rt.frames_done++; if(rt.frame_hook) rt.frame_hook(rt.frames_done-1); }

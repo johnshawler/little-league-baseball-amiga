@@ -53,6 +53,7 @@ typedef struct {
 #else
     uint16_t fb[240*256];             /* colour per pixel: NES colour (6 bit) | emphasis<<6 (| gray applied) */
 #endif
+    int      draw;                    /* 1: write the framebuffer (the picture will be displayed); 0: compute only the state effects (platform sets it per frame) */
     int      frame_done;
     int      nmi_level;               /* NMI line level (Mesen: NMIFlag) */
 } Ppu;
