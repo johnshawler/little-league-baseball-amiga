@@ -64,3 +64,27 @@ index 300d190..ae557ae 100644
  			_mixer->AddDelta(_channel, _previousCycle, output - _lastOutput);
  			_lastOutput = output;
  		}
+diff --git a/Core/SoundMixer.cpp b/Core/SoundMixer.cpp
+index 3f12baa..8c3b444 100644
+--- a/Core/SoundMixer.cpp
++++ b/Core/SoundMixer.cpp
+@@ -7,6 +7,8 @@
+ #include "OggMixer.h"
+ #include "Console.h"
+ #include "BaseMapper.h"
++#include <cstdio>
++extern FILE* g_apuLog;
+ 
+ SoundMixer::SoundMixer(shared_ptr<Console> console)
+ {
+@@ -269,6 +271,10 @@ void SoundMixer::EndFrame(uint32_t time)
+ 		}
+ 
+ 		int16_t currentOutput = GetOutputVolume(false);
++		if(g_apuLog) {
++			struct { uint32_t delta; uint8_t ch; uint8_t lvl; uint16_t stamp; } r = { (uint32_t)(int)((currentOutput - _previousOutputLeft) * masterVolume), 254, 0, (uint16_t)stamp };
++			fwrite(&r, sizeof(r), 1, g_apuLog);
++		}
+ 		blip_add_delta(_blipBufLeft, stamp, (int)((currentOutput - _previousOutputLeft) * masterVolume));
+ 		_previousOutputLeft = currentOutput;
+ 

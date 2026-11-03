@@ -163,6 +163,7 @@ def liveness(prog,blocks):
     return live_in
 
 # ----------------------------------------------------------------------------------------------------------------------------------------
+DEBUG_BLOCKS=bool(os.environ.get('XL_DEBUG_BLOCKS'))
 CTX_ADJ=4          # word: adjustment for the access cycle of the next helper call
 CTX_PTMP=6
 INTERP_ONLY_MODES={'izx'}
@@ -179,11 +180,15 @@ class Gen:
     def gen_block(self,b):
         self.cur=[]; self.b=b; key=b.key; ins=b.ins; self.cum=0; self.fnz=None; self.fc=None; self.cconst=None
         self.tot=sum(i.cyc for i in ins)
+        npen=sum(1 for i in ins if i.m in PENALTY_READ and ((i.mode in('abx','aby') and (i.arg&0xFF)!=0) or i.mode=='izy'))
         self.cur.append(label(key)+':')
         slow=self.newlab()
         if self.tot:
-            self.e(f'sub.l #{self.tot},d5'); self.e(f'bmi {slow}')
-            self.stubs.append((slow,[f'add.l #{self.tot},d5',f'move.w #0x{key[1]:X},d7','jmp rt_slow']))
+            # the entry check also reserves one cycle per possible page-crossing penalty so that dynamic extras cannot run past the cycle limit
+            self.e(f'sub.l #{self.tot+npen},d5'); self.e(f'bmi {slow}')
+            if npen: self.e(f'add.l #{npen},d5')
+            if DEBUG_BLOCKS: self.e(f'move.w #0x{key[1]:X},d7'); self.e(f'move.w #{self.tot},(4,a2)'); self.e('jsr rt_dbg_blk')
+            self.stubs.append((slow,[f'add.l #{self.tot+npen},d5',f'move.w #0x{key[1]:X},d7','jmp rt_slow']))
         for idx,i in enumerate(ins):
             self.i=i; self.idx=idx; self.next=ins[idx+1] if idx+1<len(ins) else None
             self.gen_ins(i); self.cum+=i.cyc; self.stats[i.m]+=1
@@ -234,7 +239,9 @@ class Gen:
     def setv(self):
         if self.i.live&V: self.e('svs d7'); self.e(f'move.b d7,({CTX_V},a2)')
     # ------------------------------------------------------------------ memory access
-    def helper_rd(self,idx):
+    def helper_rd(self,idx,hi=None):
+        """read via the runtime; hi = high byte of the operand address when known: it is the last value on the bus before the read (open bus)"""
+        if hi is not None: self.e(f'move.b #{hi},(3,a2)')
         self.e(f'move.w #{self.adj(idx)},({CTX_ADJ},a2)'); self.e('jsr rt_rd'); return 'd6'
     def helper_wr(self,idx):
         self.e(f'move.w #{self.adj(idx)},({CTX_ADJ},a2)'); self.e('jsr rt_wr')
@@ -263,14 +270,14 @@ class Gen:
             if r=='ram': return f'({a&0x7FF},a0)'
             if r=='win': return f'({a-0x8000},a1)'
             if r=='fix': return f'({a-0x8000},a6)'
-            self.e(f'move.w #0x{a:X},d7'); return self.helper_rd(bc)
+            self.e(f'move.w #0x{a:X},d7'); return self.helper_rd(bc,a>>8)
         if m in('abx','aby'):
             ir='d1' if m=='abx' else 'd2'; r=region(a)
             if pen: self.penalty_idx(ir,a&0xFF)
             if r=='ram' and (a&0x7FF)+255<0x800: return f'({a&0x7FF},a0,{ir}.w)'
             if r=='win' and a+255<=0xBFFF: return f'({a-0x8000},a1,{ir}.w)'
             if r=='fix' and a+255<=0xFFFF: return f'({a-0x8000},a6,{ir}.w)'
-            self.e(f'move.w #0x{a:X},d7'); self.e(f'add.w {ir},d7'); return self.helper_rd(bc)
+            self.e(f'move.w #0x{a:X},d7'); self.e(f'add.w {ir},d7'); return self.helper_rd(bc,a>>8)
         if m=='izy':
             self.ptr_load(a)
             if pen:
