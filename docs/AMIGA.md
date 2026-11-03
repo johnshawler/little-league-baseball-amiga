@@ -281,3 +281,24 @@ equal the previous renderer's (`tests/amiga` / FIFO comparison, 0 differing fram
 | **speed** | 0.60 % | **3.3 %** | 0.48 % | **1.4 %** | 0.53 % | **2.0 %** |
 
 Remaining PPU cost is mostly the per-dot model that runs when a register access (`$2002` polls: 197 per frame in the line-up screen, `$2004`, `$2005-7`) lands inside a visible line, and `render_line_fast` on drawn frames.
+
+## 13. Round 3, step 1: what the display DMA and the chip RAM cost (FS-UAE A1200)
+
+Setup of every run: FS-UAE 3.1.66 `amiga_model = A1200` (68EC020, 2 MB chip, no other RAM), KS 3.1, `video_sync = off`, **default timing options** (no `accuracy`, `uae_cpu_*` or `cpu_speed` line in `platform-a1200/test/pal.fs-uae`:
+FS-UAE's A1200 model default, i.e. the CPU runs at its original speed with the emulator's approximate chip-RAM/DMA contention, not cycle-exact CPU emulation).
+Scene: field (snapshot at frame 2000), PAL, profile window ticks 1500..5000, 8-plane (PPU_FB8) build of round 2 plus the new `PLAT_PLANES` / `PLAT_FMODE` options of `platform.c`.
+`PLAT_PLANES=0` switches the bitplane DMA off (picture black; the 8-plane display is enabled again only to draw the profile page).
+
+| display | frames in 3500 ticks | speed | translated code ms/frame | rt_x.s ms | rt_x.c ms | total ms/frame |
+|---|---|---|---|---|---|---|
+| (a) no bitplane DMA | 89 | **2.54 %** | 19.3 | 12.5 | 46.3 | 654 |
+| (b) 5 planes, FMODE 1 (32-bit fetch) | 82 | 2.34 % | 20.5 | 13.5 | 50.8 | 710 |
+| (c) 8 planes, FMODE 1 (as shipped in rounds 1-2) | 70 | 2.00 % | 25.5 | 16.9 | 61.3 | 832 |
+| (d1) 8 planes, FMODE 0 (16-bit fetch) | 43 | 1.23 % | 39.0 | 24.6 | - | 1354 |
+| (d3) 8 planes, FMODE 3 (64-bit fetch) | not measured: my DDF values (0x38/0xB8) do not give a valid picture, the telemetry could not be read | | | | | |
+
+Reading: the 8-plane display costs the CPU **21 %** of its speed against no display DMA (translated code 25.5 vs 19.3 ms, +32 %), 5 planes cost 8 % (b vs a); switching 8 to 5 planes gains **17 %** (2.00 -> 2.34 %).
+With 16-bit fetch the same display costs 1.65x more (1.23 %). So DMA contention is a factor of 1.0 to 1.3 on the speed, nowhere near the factor of 40 that is missing: the CPU work itself dominates.
+
+Cycle-exact timing: `accuracy = 2` and `uae_cpu_cycle_exact = 1 / uae_cpu_memory_cycle_exact = 1` were tried (same scene, 700 s of wall time): the emulation is so much slower than real time on this host that not even the first frame
+of the scene was completed, so no number could be obtained. The default setting above is what all numbers in this document use; if a real stock A1200 has slower chip-RAM access than FS-UAE models, the real speed is lower.

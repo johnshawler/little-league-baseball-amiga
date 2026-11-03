@@ -29,6 +29,9 @@ static void apply_palette(void)
 {
     uint32_t rgb[32]; const Ppu *p = &nes.ppu; unsigned gm = p->gray ? 0x30 : 0x3F, em = (p->emph & 3) << 6;
     for (unsigned i = 0; i < 32; i++) rgb[i] = nes_rgb[(p->pal[i] & gm) | em];
+#ifdef TELEM
+    rgb[0] = 0x666666; rgb[31] = 0x000000;        /* telemetry pages are drawn with colour indices 0 / 31: make them readable (test builds only) */
+#endif
     plat_set_palette32(rgb);
 }
 #endif
