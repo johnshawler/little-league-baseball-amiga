@@ -75,6 +75,9 @@ static void rt_sync(uint64_t dots){
 #ifndef AMIGA
         if(rt_ppu_check){ chk_advance(p->dots); chk_cmp("sync",p->frame_done); nes_ref.ppu.frame_done=0; }
 #endif
+#ifdef PREDICT_STRESS
+        { extern uint64_t ppu_predict_hit(Nes*); static uint64_t last; uint64_t h=ppu_predict_hit(&nes); if(h) last=h; }
+#endif
         if(p->nmi_level!=before) q_push(sample_cycle_for_dots(p->dots), 2*p->dots, p->nmi_level);
         if(p->frame_done){ p->frame_done=0; rt.frames_done++; if(rt.frame_hook) rt.frame_hook(rt.frames_done-1); }
     }

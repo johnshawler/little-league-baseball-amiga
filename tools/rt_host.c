@@ -16,7 +16,7 @@ static int nox, no2002; static int wanted(TRec*r){ if(no2002&&r->t=='R'&&r->a==0
 static void trace(char t, uint16_t a, uint8_t v, int32_t ab){
     TRec r={t,v,a,ab,(uint32_t)rt.cyc,nes.ppu.frame}; if(t=='X'&&nox) return; if(t=='R'&&a==0x2002&&no2002) return;
     if(cmpf){ if(!wanted(&r)) return; TRec m; do{ if(!rd_rec(cmpf,&m)){ if(!cmp_fail){ fprintf(stderr,"reference trace ended at record %ld\n",cmpn); cmp_fail=1; exit(1);} } }while(!wanted(&m));
-        if(m.t!=r.t||m.a!=r.a||m.v!=r.v||m.cyc!=r.cyc){ fprintf(stderr,"DIVERGE at record %ld: ref %c a=%04x v=%02x cyc=%u | mine %c a=%04x v=%02x cyc=%u\n",cmpn,m.t,m.a,m.v,m.cyc,r.t,r.a,r.v,r.cyc); exit(1); } cmpn++; return; }
+        if(m.t!=r.t||m.a!=r.a||m.v!=r.v||m.cyc!=r.cyc){ fprintf(stderr,"DIVERGE at record %ld: ref %c a=%04x v=%02x cyc=%u frame %u | mine %c a=%04x v=%02x cyc=%u frame %u\n",cmpn,m.t,m.a,m.v,m.cyc,m.fr,r.t,r.a,r.v,r.cyc,r.fr); exit(1); } cmpn++; return; }
     if(trc) fwrite(&r,sizeof r,1,trc); }
 static uint8_t input(int port, long frame){
     unsigned m=0; for(int i=0;i<ns;i++){ if(sf[i]<=frame) m=sm[i]; else break; } if(port) m>>=16;

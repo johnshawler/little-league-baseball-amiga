@@ -20,6 +20,9 @@ void mmc1_write(Mapper *m, uint16_t addr, uint8_t v){
 }
 /* 1 if the write changes what the PPU sees (CHR banks or mirroring): the board synchronises the PPU before applying it */
 int mmc1_write_ppu_effect(const Mapper *m, uint16_t addr, uint8_t v){
+#ifdef NOCHRSYNC
+    return 0;
+#endif
     if((v&0x80) || m->count!=4) return 0;
     Mapper t=*m; mmc1_write(&t,addr,v);
     return t.chr_lo!=m->chr_lo || t.chr_hi!=m->chr_hi || t.mirror!=m->mirror;
