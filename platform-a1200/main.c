@@ -60,6 +60,9 @@ static uint8_t input(int port, long frame)
 static uint32_t game_base;             /* game clock tick at which frame 0 is due */
 static uint32_t st_idle, st_audio, st_disp, st_late, st_dskip, st_dconv, st_maxlag;
 static uint8_t skip_run;
+#ifdef TELEM
+static uint32_t sticky;
+#endif
 static uint64_t a_from;
 
 static inline uint32_t e_since(uint16_t t0) { return (uint16_t)(t0 - plat_eclock()); }
@@ -87,8 +90,11 @@ static void on_frame(long f)
 #ifdef TELEM
         {
             uint32_t w[8 * 8] = { TELEM_MAGIC, plat_tick_count, (uint32_t)f + 1, plat_vbl_count, audio_underruns, audio_chunks_played, st_dconv, st_dskip,
-                                  st_idle, st_audio, st_disp, st_late, st_maxlag, display_pairs_last, plat_is_pal, rt_apu.dropped };
-            telem_draw(plat_buf[display_back() ^ 1], w, 16, 224);
+                                  st_idle, st_audio, st_disp, st_late, st_maxlag, display_pairs_last, plat_is_pal, rt_apu.dropped,
+                                  (uint32_t)input(0, 0) | ((uint32_t)input(1, 0) << 8), 0 };
+            sticky |= w[16];     /* every controller bit seen so far (input test) */
+            w[17] = sticky;
+            telem_draw(plat_buf[display_back() ^ 1], w, 18, 224);
         }
 #endif
     }
@@ -143,7 +149,28 @@ static void stage(uint32_t n) { uint32_t w[2] = { TELEM_MAGIC, 0x80000000u | n }
 #else
 #define stage(n) ((void)0)
 #endif
-#ifdef AUDIO_TEST      /* audio chain test: replay the PCM chunks of a host run (tools/rt_host.c PCMOUT) through audio.c at the game clock, no emulation */
+#ifdef DISPLAY_TEST    /* display pacing test: two stored 256x240 frames are shown alternately, one per game clock tick, without emulation (how many pictures are converted on PAL/NTSC, cost of a full conversion) */
+extern const uint8_t dtest_frames[];
+void main(void)
+{
+    display_init();
+    uint32_t base = plat_tick_count + 30, conv = 0, skipped = 0, e_conv = 0, e_max = 0, pairs = 0;
+    for (unsigned k = 0; k < 600; k++) {
+        plat_wait_ticks(++base);
+        uint16_t t0 = plat_eclock();
+#ifdef DISPLAY_TEST_FLIP     /* no conversion: only the buffer flip logic (which game frames can be shown on a 50 Hz display) */
+        int r = 0; if (!plat_show_pending()) { plat_show(k & 1); r = 1; }
+#else
+        int r = display_frame(dtest_frames + (k & 1) * 61440);
+#endif
+        uint32_t e = e_since(t0);
+        if (r) { conv++; e_conv += e; pairs += display_pairs_last; if (e > e_max) e_max = e; } else skipped++;
+    }
+    uint32_t w[16] = { TELEM_MAGIC, plat_tick_count, 600, plat_vbl_count, conv, skipped, e_conv, e_max, pairs, plat_is_pal, plat_lines };
+    telem_draw(plat_buf[0], w, 16, 224); telem_draw(plat_buf[1], w, 16, 224);
+    for (;;) __asm__ volatile("stop #0x2000");
+}
+#elif defined(AUDIO_TEST)      /* audio chain test: replay the PCM chunks of a host run (tools/rt_host.c PCMOUT) through audio.c at the game clock, no emulation */
 extern const uint8_t audio_test_pcm[], audio_test_pcm_end[];
 void main(void)
 {

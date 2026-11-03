@@ -26,13 +26,13 @@ def decode(path, want=None, nwords=None):
     kinds = [want] if want else [k for k in ('hud', 'prof', 'pc') if k in pages]
     if not kinds or kinds[0] not in pages: return None, None
     kind = kinds[0]; x0, y0 = pages[kind]
-    n = nwords or (16 if kind == 'hud' else 7 if kind == 'pc' else 104)
+    n = nwords or (18 if kind == 'hud' else 7 if kind == 'pc' else 104)
     w = []
     for i in range(n):
         r, c = divmod(i, 8)
         w.append(bits_at(px, x0 + c * 64, y0 + r * 4))
     return kind, w
-HUD = ['magic','tick','frames','vbl','underruns','chunks_played','disp_conv','disp_skip','idle_e','audio_e','disp_e','late','maxlag','pairs','pal','apu_dropped']
+HUD = ['magic','tick','frames','vbl','underruns','chunks_played','disp_conv','disp_skip','idle_e','audio_e','disp_e','late','maxlag','pairs','pal','apu_dropped','input','sticky_input']
 if __name__ == '__main__':
     for f in sys.argv[1:]:
         kind, w = decode(f)

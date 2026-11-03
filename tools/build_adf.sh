@@ -4,6 +4,7 @@
 #   EXTRA="-DPROFILE"          PC-sampling profile page (test builds)
 #   TESTINPUT=script.txt       controller driven by a frame script ("frame hexmask" lines, libretro bits as tools/rt_host.c)
 #   EXTRA="-DSTOP_AT=N"        show the picture of frame N (hook index) and stop (pixel comparison tests)
+#   DISPLAY_TEST=frames.bin    alternate two stored frames on the display (pacing / conversion cost test)
 #   AUDIO_TEST=file.pcm        replay a PCM file through the audio module (no emulation)
 #   SNAPSHOT=file.snap         start from a runtime snapshot made by tools/snap.c (test builds)
 #   BUILD=name                 build directory build/<name> (default amiga)
@@ -41,6 +42,10 @@ fi
 if [ -n "$AUDIO_TEST" ]; then  # test build: replay a PCM file (tools/rt_host.c PCMOUT) through the audio module
   printf '\t.section .rodata\n\t.even\n\t.globl audio_test_pcm, audio_test_pcm_end\naudio_test_pcm:\n\t.incbin "%s"\naudio_test_pcm_end:\n' "$AUDIO_TEST" > $B/atest.s
   $AS $B/atest.s -o $B/atest.o; SNAPOBJ="$SNAPOBJ $B/atest.o"; CFLAGS="$CFLAGS -DAUDIO_TEST"
+fi
+if [ -n "$DISPLAY_TEST" ]; then  # test build: alternate two stored frames (2 x 61440 bytes) on the display, no emulation
+  printf '\t.section .rodata\n\t.even\n\t.globl dtest_frames\ndtest_frames:\n\t.incbin "%s"\n' "$DISPLAY_TEST" > $B/dtest.s
+  $AS $B/dtest.s -o $B/dtest.o; SNAPOBJ="$SNAPOBJ $B/dtest.o"; CFLAGS="$CFLAGS -DDISPLAY_TEST"
 fi
 # 1. translated program + dispatch tables (sparse), palette
 python3 translator/x65.py "$ROM" translator/seen_abs.txt $B/code.s $B/tab.s $B/report.txt
