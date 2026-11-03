@@ -5,6 +5,10 @@
  *   last cycle is L iff needNmi was set at the end of cycle <= L-1. */
 #include "rt.h"
 Rt rt;
+Apu rt_apu;
+#ifndef RT_AUDIO
+#define RT_AUDIO 0     /* 1: simulate the channel sequencers and queue audio events (the audio consumer must then call apu_render*() regularly) */
+#endif
 
 static inline uint64_t sample_cycle_for_dots(uint64_t d){ return d<=5 ? 0 : (d-5+2)/3; }   /* smallest k with 3k+5 >= d */
 
@@ -56,7 +60,7 @@ static uint8_t mem_read(uint16_t a, uint64_t c){
     if(a<0x2000) v=nes.ram[a&0x7FF];
     else if(a<0x4000) v=ppu_rd(a,c);
     else if(a==0x4016||a==0x4017){ int i=a&1; if(nes.strobe) nes.joy_shift[i]=nes.joy[i]; uint8_t bit=nes.joy_shift[i]&1; nes.joy_shift[i]=(nes.joy_shift[i]>>1)|0x80; v=(rt.openbus&0xE0)|bit; }
-    else if(a==0x4015) v=0;                       /* APU status: see apu.c once integrated */
+    else if(a==0x4015) v=apu_read_status(&rt_apu,c)|(rt.openbus&0x20);   /* APU status (runtime/apu.c); bit 5 = open bus */
     else if(a>=0x8000) v= a<0xC000 ? nes.map.prg[nes.map.prg_lo+(a-0x8000)] : nes.map.prg[nes.map.prg_hi+(a-0xC000)];
     else v=rt.openbus;
     return v;
@@ -66,6 +70,7 @@ static void mem_write(uint16_t a, uint8_t v, uint64_t c){
     else if(a<0x4000) ppu_wr(a,v,c);
     else if(a==0x4014){ rt.need_halt=1; rt.dma_on=1; rt.dma_page=v; }
     else if(a==0x4016){ int s=v&1; if(nes.strobe && !s){ nes.joy_shift[0]=nes.joy[0]; nes.joy_shift[1]=nes.joy[1]; } nes.strobe=s; }
+    else if(a<0x4018) apu_write(&rt_apu,a,v,c);   /* $4000-$4013, $4015, $4017 (4014/4016 handled above) */
     else if(a>=0x8000) mmc1_write(&nes.map,a,v);
 }
 uint8_t rt_io_rd(uint16_t a, uint64_t c){ uint8_t v=mem_read(a,c); rt.openbus=v; return v; }
@@ -102,6 +107,7 @@ void rt_init(const uint8_t *prg, const uint8_t *chr){
     memset(&rt,0,sizeof rt); rt.need_cycle=RT_NEVER; rt.ram=nes.ram;
     memset(&nes,0,sizeof nes); nes.map.prg=prg; nes.map.chr=chr;
     ppu_reset(&nes.ppu); mmc1_reset(&nes.map); cpu_reset(&rt.cpu);
+    apu_reset(&rt_apu); apu_set_audio(&rt_apu,RT_AUDIO);
     rt_sync(26); rt.cyc=7;
     rt.cpu.pc=(uint16_t)(prg[7*16384+0x3FFC]|prg[7*16384+0x3FFD]<<8);
 }

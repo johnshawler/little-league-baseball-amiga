@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include "cpu6502.h"
 #include "nes.h"
+#include "apu.h"
 
 #define RT_NEVER 0xFFFFFFFFFFFFFFFFull
 
@@ -25,6 +26,7 @@ typedef struct {
     uint8_t *ram;                 /* == nes.ram */
 } Rt;
 extern Rt rt;
+extern Apu rt_apu;           /* 2A03 APU, runtime/apu.c; advanced lazily by register accesses and apu_render*() */
 
 void rt_init(const uint8_t *prg, const uint8_t *chr);
 /* Interpreter-only execution (host verification of the lazy time model, and the slow path of the translated build). */

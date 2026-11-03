@@ -71,6 +71,7 @@ void     apu_set_audio(Apu *a, int on);                       /* off: skip chann
 void     apu_write(Apu *a, uint16_t addr, uint8_t v, uint64_t cyc);   /* $4000-$4013, $4015, $4017 (not $4014, $4016) */
 uint8_t  apu_read_status(Apu *a, uint64_t cyc);               /* $4015 read; clears the frame IRQ flag.  Bit 5 (open bus) is NOT included: OR in (openbus & 0x20) */
 void     apu_run_to(Apu *a, uint64_t cyc);                    /* advance the observable state to the given bus cycle */
+void     apu_flush(Apu *a, uint64_t cyc);                     /* bring the audio events complete up to (excluding) bus cycle cyc */
 int      apu_irq(const Apu *a);                               /* frame-counter IRQ line as of the last run position */
 uint64_t apu_irq_cycle(const Apu *a);                         /* bus cycle at which the line will next be raised (UINT64_MAX: not before the next register access) */
 /* Pop the earliest event with t < until (bus cycle); channel 0..3 = pulse1, pulse2, triangle, noise.  Returns 0 if none. */

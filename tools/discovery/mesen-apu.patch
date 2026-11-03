@@ -1,0 +1,66 @@
+diff --git a/Core/APU.cpp b/Core/APU.cpp
+index c5e4313..8f1c7f1 100644
+--- a/Core/APU.cpp
++++ b/Core/APU.cpp
+@@ -9,6 +9,9 @@
+ #include "EmulationSettings.h"
+ #include "SoundMixer.h"
+ #include "MemoryManager.h"
++#include <cstdio>
++#include <cstdlib>
++FILE* g_apuLog = getenv("NESAPU") ? fopen(getenv("NESAPU"), "wb") : nullptr;
+ 
+ APU::APU(shared_ptr<Console> console)
+ {
+@@ -192,6 +195,11 @@ void APU::Exec()
+ void APU::EndFrame()
+ {
+ 	Run();
++	if(g_apuLog) {
++		//block end marker (ch 255): EndFrame is called every CycleLength-1 cycles AND at the end of every video frame (Console::RunFrame)
++		struct { uint32_t cc; uint8_t ch; uint8_t lvl; uint16_t stamp; } r = { (uint32_t)(_console->GetCpu()->GetCycleCount() - _currentCycle + _currentCycle), 255, 0, (uint16_t)_currentCycle };
++		fwrite(&r, sizeof(r), 1, g_apuLog);
++	}
+ 	_squareChannel[0]->EndFrame();
+ 	_squareChannel[1]->EndFrame();
+ 	_triangleChannel->EndFrame();
+diff --git a/Core/APU.h b/Core/APU.h
+index 8ec9773..2e8c187 100644
+--- a/Core/APU.h
++++ b/Core/APU.h
+@@ -19,6 +19,8 @@ class APU : public Snapshotable, public IMemoryHandler
+ {
+ 	friend ApuFrameCounter;
+ 
++	public:
++		uint32_t GetApuCurrentCycle() { return _currentCycle; }
+ 	private:
+ 		bool _apuEnabled;
+ 		bool _needToRun;
+diff --git a/Core/BaseApuChannel.h b/Core/BaseApuChannel.h
+index 300d190..ae557ae 100644
+--- a/Core/BaseApuChannel.h
++++ b/Core/BaseApuChannel.h
+@@ -5,6 +5,10 @@
+ #include "Snapshotable.h"
+ #include "SoundMixer.h"
+ #include "Console.h"
++#include "APU.h"
++#include "CPU.h"
++#include <cstdio>
++extern FILE* g_apuLog;
+ 
+ class BaseApuChannel : public IMemoryHandler, public Snapshotable
+ {
+@@ -97,6 +101,11 @@ public:
+ 	void AddOutput(int8_t output)
+ 	{
+ 		if(output != _lastOutput) {
++			if(g_apuLog) {
++				//APU event log: bus cycle (CPU cycle count numbering), channel, new level
++				struct { uint32_t cc; uint8_t ch; uint8_t lvl; uint16_t stamp; } r = { (uint32_t)(_console->GetCpu()->GetCycleCount() - _console->GetApu()->GetApuCurrentCycle() + _previousCycle), (uint8_t)_channel, (uint8_t)output, (uint16_t)_previousCycle /*block coordinate, i.e. the blip timestamp*/ };
++				fwrite(&r, sizeof(r), 1, g_apuLog);
++			}
+ 			_mixer->AddDelta(_channel, _previousCycle, output - _lastOutput);
+ 			_lastOutput = output;
+ 		}
