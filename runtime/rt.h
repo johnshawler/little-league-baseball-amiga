@@ -24,6 +24,7 @@ typedef struct {
     void   (*trace_hook)(char type, uint16_t a, uint8_t v, int32_t abs_);   /* optional: X/R/W records for host verification */
     int      op_fetch;
     uint8_t *ram;                 /* == nes.ram */
+    int      ldirty;              /* the inputs of rt_compute_limit_at changed (NMI queue, DMA): the fast path recomputes the cycle limit after the next write */
 } Rt;
 extern Rt rt;
 extern Apu rt_apu;           /* 2A03 APU, runtime/apu.c; advanced lazily by register accesses and apu_render*() */
@@ -41,6 +42,7 @@ void rt_run_interp(long frames);
 int  rt_step(void);
 /* absolute cycle limit for the fast path (translated code): recomputed after register writes that can change event times */
 uint64_t rt_compute_limit(void);
+uint64_t rt_compute_limit_at(uint64_t now);
 
 /* fast-path helpers: access at absolute cycle c (reference numbering) */
 uint8_t rt_io_rd(uint16_t addr, uint64_t c);

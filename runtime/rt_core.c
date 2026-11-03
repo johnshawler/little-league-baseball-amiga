@@ -18,6 +18,7 @@ Apu rt_apu;
 static inline uint64_t sample_cycle_for_dots(uint64_t d){ return d<=5 ? 0 : rt_div3(d-3); }   /* smallest k with 3k+5 >= d */
 
 static void q_push(uint64_t sample, uint64_t key, uint8_t lvl){
+    rt.ldirty=1;
     int i=rt.nq; if(i==8){ i=7; }
     while(i>0 && rt.q[i-1].key>key){ rt.q[i]=rt.q[i-1]; i--; }
     rt.q[i].sample=sample; rt.q[i].key=key; rt.q[i].lvl=lvl; if(rt.nq<8) rt.nq++;
@@ -27,7 +28,7 @@ static void nmi_advance(uint64_t upto){
     while(rt.nq && rt.q[0].sample<=upto){
         uint64_t k=rt.q[0].sample; uint8_t lv=rt.q[0].lvl; int n=1;
         while(n<rt.nq && rt.q[n].sample==k){ lv=rt.q[n].lvl; n++; }          /* only the final level at the sample point counts */
-        if(lv && !rt.lvl_sampled && rt.need_cycle==RT_NEVER) rt.need_cycle=k;
+        if(lv && !rt.lvl_sampled && rt.need_cycle==RT_NEVER){ rt.need_cycle=k; rt.ldirty=1; }
         rt.lvl_sampled=lv;
         for(int i=n;i<rt.nq;i++) rt.q[i-n]=rt.q[i];
         rt.nq-=n;
@@ -83,6 +84,26 @@ static void rt_sync(uint64_t dots){
     }
 }
 void ppu_sync_rt(uint64_t dots){ rt_sync(dots); }
+#define FRAME_DOTS 89342u
+/* cycle limit for translated code (see FACTS/DESIGN): blocks whose last cycle is <= limit cannot be interrupted by an NMI or miss a frame event */
+uint64_t rt_compute_limit_at(uint64_t now){
+    Ppu *p=&nes.ppu; uint64_t E=RT_NEVER;
+    if(rt.need_halt) E=now;
+    if(rt.need_cycle!=RT_NEVER && rt.need_cycle<E) E=rt.need_cycle;
+    for(int i=0;i<rt.nq;i++) if(rt.q[i].lvl && rt.q[i].sample<E) E=rt.q[i].sample;
+    /* PPU position of the last executed dot, as a linear index into the frame */
+    int64_t cur=(int64_t)(p->line+1)*341+p->cx;
+    int64_t iv=242LL*341+1;          /* the dot that sets the vblank flag */
+    int64_t ifr=241LL*341;           /* the dot that completes a frame (line 240, cx 0) */
+    int64_t dv=iv-cur, df=ifr-cur;
+    if(p->line==-1){ dv--; df--; }     /* an odd pre-render line can be one dot shorter (conservative) */
+    if(dv<=0) dv+=FRAME_DOTS-1;      /* next frame; -1: an odd frame may be one dot shorter */
+    if(df<=0) df+=FRAME_DOTS-1;
+    uint64_t ev=sample_cycle_for_dots(p->dots+dv), ef=sample_cycle_for_dots(p->dots+df);
+    if(ev<E) E=ev; if(ef<E) E=ef;
+    return E;
+}
+
 
 static uint8_t ppu_rd(uint16_t a, uint64_t c){
     rt_sync(3*c+4); uint8_t before=nes.ppu.nmi_level; uint8_t v=ppu_reg_read(&nes,a);
@@ -113,7 +134,7 @@ static uint8_t mem_read(uint16_t a, uint64_t c){
 static void mem_write(uint16_t a, uint8_t v, uint64_t c){
     if(a<0x2000) nes.ram[a&0x7FF]=v;
     else if(a<0x4000) ppu_wr(a,v,c);
-    else if(a==0x4014){ rt.need_halt=1; rt.dma_on=1; rt.dma_page=v; }
+    else if(a==0x4014){ rt.need_halt=1; rt.dma_on=1; rt.dma_page=v; rt.ldirty=1; }
     else if(a==0x4016){ int s=v&1; if(nes.strobe && !s){ nes.joy_shift[0]=nes.joy[0]; nes.joy_shift[1]=nes.joy[1]; } nes.strobe=s; }
     else if(a<0x4018) apu_write(&rt_apu,a,v,c);   /* $4000-$4013, $4015, $4017 (4014/4016 handled above) */
     else if(a>=0x8000){
@@ -135,7 +156,6 @@ static void process_dma(uint16_t read_addr){
         rt.cyc++;
         if(get){ rv=mem_read((uint16_t)(rt.dma_page*0x100+ra),rt.cyc); ra++; counter++; }
         else if(counter&1){
-            if(fast==1){ Ppu*p=&nes.ppu; uint8_t b=rv; if((p->oamaddr&3)==2) b&=0xE3; p->oam[p->oamaddr]=b; p->oamaddr++; p->oam_dirty=1; p->openbus=rv; counter++; if(counter==0x200){ rt.dma_on=0; rt_sync(3*rt.cyc+4); } continue; }
             if(rt.trace_hook) rt.trace_hook('W',0x2004,rv,-1);
             ppu_wr(0x2004,rv,rt.cyc); counter++; if(counter==0x200) rt.dma_on=0;
             if(fast<0){   /* after the first synchronised write: block mode if every remaining write stores into OAM and nothing else can observe the PPU in between:
@@ -143,6 +163,11 @@ static void process_dma(uint16_t read_addr){
                 Ppu*p=&nes.ppu; int rem=(0x200-counter)*3+6;
                 fast = (!rt.trace_hook && !RT_CHK && rt.dma_page<0x20 && !p->need_update && !p->upd_delay &&
                         (!p->rend || (p->line>=240 && (p->line-240)*341+p->cx+rem < 21*341))) ? 1 : 0;
+                if(fast && rt.dma_on){   /* the remaining pairs of get/put cycles in one go: bytes ra..255 of the RAM page into OAM at the OAM address, 2 cycles each */
+                    const uint8_t*src=nes.ram+((rt.dma_page<<8)&0x7FF); unsigned oa=p->oamaddr; uint8_t*oam=p->oam; unsigned i=ra;
+                    for(;i<256;i++){ uint8_t b=src[i]; if((oa&3)==2) b&=0xE3; oam[oa]=b; oa=(oa+1)&255; }
+                    p->oamaddr=(uint8_t)oa; p->oam_dirty=1; p->openbus=src[255]; rt.cyc+=2u*(256-ra); rt.dma_on=0; rt_sync(3*rt.cyc+4);
+                }
             }
         }
         else { if(read_addr!=0x4016&&read_addr!=0x4017) (void)mem_read(read_addr,rt.cyc); }
@@ -177,10 +202,18 @@ void rt_init(const uint8_t *prg, const uint8_t *chr){
     rt.cpu.pc=(uint16_t)(prg[7*16384+0x3FFC]|prg[7*16384+0x3FFD]<<8);
 }
 
+int rt_lazy;      /* host test option (RT_LAZY=1): the interpreter synchronises the PPU only when an access or an event needs it, like the translated program */
+static uint64_t lazy_limit;
 int rt_step(void){
     rt.op_fetch=1; int r=cpu_step(&rt.cpu); rt.op_fetch=0;
     if(r<0) return r;
-    uint64_t L=rt.cyc; rt_sync(3*(L-1)+5); nmi_advance(L-1);
+    uint64_t L=rt.cyc;
+    if(rt_lazy){
+        if(rt.ldirty){ lazy_limit=rt_compute_limit_at(L); rt.ldirty=0; }
+        if(L<=lazy_limit && !rt.need_halt) return 0;
+        lazy_limit=rt_compute_limit_at(L); rt.ldirty=0;
+    }
+    rt_sync(3*(L-1)+5); nmi_advance(L-1);
     if(rt.need_cycle!=RT_NEVER && rt.need_cycle<=L-1){ rt.need_cycle=RT_NEVER; cpu_nmi(&rt.cpu); }
     return 0;
 }

@@ -9,6 +9,11 @@ extern void rt_fatal(int code) __attribute__((noreturn));
 #include "rt.h"
 #include "rt_x.h"
 XCtx xrt_ctx;
+#include <stddef.h>
+#ifdef __mc68000__     /* offsets used by the assembler fast paths in rt_x.s */
+_Static_assert(offsetof(Nes,map.shift)==8 && offsetof(Nes,map.count)==9 && offsetof(Nes,joy)==32 && offsetof(Nes,joy_shift)==36 && offsetof(Nes,strobe)==38, "nes layout used by rt_x.s");
+_Static_assert(offsetof(Rt,openbus)==XRT_OFF_OPENBUS, "rt layout used by rt_x.s");
+#endif
 extern uint32_t tab_win0[], tab_win1[], tab_win2[], tab_win3[], tab_win4[], tab_win5[], tab_win6[], tab_fix[];
 extern void rt_unk_ent(void);
 void ppu_sync_rt(uint64_t dots);
@@ -16,30 +21,13 @@ void rt_nmi_check(void);
 static uint8_t nztab[16]={0,0,0,0,2,0,0,0,0x80,0,0,0,0x82,0,0,0};
 static uint32_t *wintabs[7]={tab_win0,tab_win1,tab_win2,tab_win3,tab_win4,tab_win5,tab_win6};
 
-static inline uint64_t sample_cycle_for_dots(uint64_t d){ return d<=5 ? 0 : rt_div3(d-3); }
-#define FRAME_DOTS 89342u
-/* cycle limit for translated code (see FACTS/DESIGN): blocks whose last cycle is <= limit cannot be interrupted by an NMI or miss a frame event */
-uint64_t rt_compute_limit_at(uint64_t now){
-    Ppu *p=&nes.ppu; uint64_t E=RT_NEVER;
-    if(rt.need_halt) E=now;
-    if(rt.need_cycle!=RT_NEVER && rt.need_cycle<E) E=rt.need_cycle;
-    for(int i=0;i<rt.nq;i++) if(rt.q[i].lvl && rt.q[i].sample<E) E=rt.q[i].sample;
-    /* PPU position of the last executed dot, as a linear index into the frame */
-    int64_t cur=(int64_t)(p->line+1)*341+p->cx;
-    int64_t iv=242LL*341+1;          /* the dot that sets the vblank flag */
-    int64_t ifr=241LL*341;           /* the dot that completes a frame (line 240, cx 0) */
-    int64_t dv=iv-cur, df=ifr-cur;
-    if(dv<=0) dv+=FRAME_DOTS-1;      /* next frame; -1: an odd frame may be one dot shorter */
-    if(df<=0) df+=FRAME_DOTS-1;
-    uint64_t ev=sample_cycle_for_dots(p->dots+dv), ef=sample_cycle_for_dots(p->dots+df);
-    if(ev<E) E=ev; if(ef<E) E=ef;
-    return E;
-}
 static void load_mapper_ptrs(void){
     XCtx *c=&xrt_ctx; unsigned bank=nes.map.prg_lo>>14;
     c->win=(uint8_t*)nes.map.prg+nes.map.prg_lo; c->tabwin=(uint8_t*)wintabs[bank<7?bank:0]-0x20000;
 }
 static void trace_c(char t,uint16_t a,uint8_t v,uint64_t cyc){ if(rt.trace_hook){ rt.cyc=cyc; rt.trace_hook(t,a,v,-1); } }
+/* trace records for the assembler fast paths (host verification builds only: rt_x.s -DXRT_TRACE) */
+void xrt_trace_c(uint32_t type, uint32_t addr, uint32_t val, int32_t d5, int32_t adj){ if(rt.trace_hook) trace_c((char)type,(uint16_t)addr,(uint8_t)val,rt.limit-(int64_t)d5+adj); }
 uint32_t xrt_rd_c(uint32_t addr, int32_t d5, int32_t adj){
     uint64_t c=rt.limit-(int64_t)d5+adj; uint16_t a=(uint16_t)addr;
     rt.openbus=xrt_ctx.pad;
@@ -52,6 +40,8 @@ int32_t xrt_wr_c(uint32_t addr, uint32_t val, int32_t d5, int32_t adj){
     if(a>=0x2000) trace_c('W',a,(uint8_t)val,c);
     rt_io_wr(a,(uint8_t)val,c);
     if(a>=0x8000) load_mapper_ptrs();
+    if(!rt.ldirty) return 0;                     /* nothing that determines the cycle limit has changed */
+    rt.ldirty=0;
     uint64_t nl=rt_compute_limit_at(c);
     int32_t delta=(int32_t)(nl-rt.limit); rt.limit=nl; return delta;
 }
@@ -80,7 +70,7 @@ int32_t xrt_slow_c(int32_t pc_in){
 #else
         if(rt_step()<0) rt_fatal(3);          /* undocumented opcode: never executed by this game */
 #endif
-        rt.limit=rt_compute_limit_at(rt.cyc);
+        rt.limit=rt_compute_limit_at(rt.cyc); rt.ldirty=0;
         if(rt.frames_done>=c->frames_target) break;
         if(xl_is_entry(cpu->pc) && rt.limit>rt.cyc+24 && !rt.need_halt) break;
     }
@@ -94,7 +84,7 @@ int32_t xrt_slow_c(int32_t pc_in){
 void xrt_run(long frames){
     XCtx *c=&xrt_ctx;
     c->frames_target=frames; c->ram=nes.ram; c->tabfix=(uint8_t*)tab_fix-0x30000; c->nztab=nztab; c->fixbase=(uint8_t*)nes.map.prg+7*16384-0x4000;
-    load_mapper_ptrs(); rt.limit=rt_compute_limit_at(rt.cyc);
+    load_mapper_ptrs(); rt.limit=rt_compute_limit_at(rt.cyc); rt.ldirty=0;
     extern void xrt_enter(void); xrt_enter();
 }
 

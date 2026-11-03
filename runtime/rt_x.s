@@ -50,8 +50,44 @@ rt_slow:
 	moveq #0,d0
 	move.w d7,d0
 	bra.s xrt_slow_entry
-/* helpers: d7.w = 6502 address, ctx->adj = access cycle adjustment, d6.b = value (wr) / result (rd); d5 = budget */
+/* ---------------------------------------------------------------------------------------------------------------------------------------
+ * I/O helper interface (called by the translated code with  move.w #adj,(4,a2) ; jsr rt_rd / rt_wr ):
+ *   d7.w = 6502 address, ctx->adj = adjustment of the access cycle (access cycle = limit - d5 + adj), d5 = budget (limit - now),
+ *   d6.b = value to write (rt_wr) / result (rt_rd, on return), (3,a2) = open bus value for the next read (high byte of the operand address).
+ *   Preserved: d0-d5, a0-a6.  Clobbered: d6, d7.  rt_wr may change the budget d5 and the window registers a1/a3 (mapper write).
+ * Assembler fast paths (no C call): MMC1 writes that only shift the serial register (4 of 5 writes), reads of $4016/$4017.
+ * Everything else goes through xrt_rd_c / xrt_wr_c (C).  A translator can call the fast paths directly for static addresses: rt_wr_mmc1 (d6=value,
+ * address >= $8000), rt_rd_joy0 / rt_rd_joy1 (result in d6, needs (3,a2)); they fall back to the general path when they cannot handle the access.
+ * Host verification builds (-DXRT_TRACE) emit the trace records of the accesses the fast paths handle.
+ * Layout constants (offsets in Nes / Rt) are checked by static asserts in rt_x.c.
+ * --------------------------------------------------------------------------------------------------------------------------------------- */
+	.globl rt_wr_mmc1, rt_rd_joy0, rt_rd_joy1
+	.extern xrt_trace_c, nes, rt
+.macro TRACE_CALL type
+.ifdef XRT_TRACE
+	movem.l d0-d1/a0-a1,-(sp)
+	move.w 4(a2),d1
+	ext.l d1
+	move.l d1,-(sp)
+	move.l d5,-(sp)
+	moveq #0,d1
+	move.b d6,d1
+	move.l d1,-(sp)
+	moveq #0,d1
+	move.w d7,d1
+	move.l d1,-(sp)
+	move.l #\type,-(sp)
+	jsr xrt_trace_c
+	lea 20(sp),sp
+	movem.l (sp)+,d0-d1/a0-a1
+.endif
+.endm
 rt_rd:
+	cmp.w #0x4016,d7
+	beq rt_rd_joy0
+	cmp.w #0x4017,d7
+	beq rt_rd_joy1
+rt_rd_gen:
 	movem.l d0-d1/a0-a1,-(sp)
 	moveq #0,d0
 	move.w d7,d0
@@ -65,7 +101,61 @@ rt_rd:
 	move.b d0,d6
 	movem.l (sp)+,d0-d1/a0-a1
 	rts
+rt_rd_joy0:
+	tst.b nes+38
+	beq.s 1f
+	move.b nes+32,nes+36
+1:	move.b nes+36,d6
+	move.b d6,d7
+	lsr.b #1,d7
+	or.b #0x80,d7
+	move.b d7,nes+36
+	and.b #1,d6
+	move.b 3(a2),d7
+	and.b #0xE0,d7
+	or.b d7,d6
+	move.b d6,rt+194
+	move.w #0x4016,d7
+	TRACE_CALL 82
+	rts
+rt_rd_joy1:
+	tst.b nes+38
+	beq.s 1f
+	move.b nes+32+1,nes+36+1
+1:	move.b nes+36+1,d6
+	move.b d6,d7
+	lsr.b #1,d7
+	or.b #0x80,d7
+	move.b d7,nes+36+1
+	and.b #1,d6
+	move.b 3(a2),d7
+	and.b #0xE0,d7
+	or.b d7,d6
+	move.b d6,rt+194
+	move.w #0x4017,d7
+	TRACE_CALL 82
+	rts
 rt_wr:
+	cmp.w #0x8000,d7
+	bcs.s rt_wr_gen
+rt_wr_mmc1:
+.ifdef XRT_CHECK
+	bra rt_wr_gen              /* host self-check (PPU_CHECK) mirrors mapper writes to the reference instance in C */
+.endif
+	tst.b d6
+	bmi.s rt_wr_gen            /* bit 7: reset of the shift register */
+	cmp.b #4,nes+9
+	beq.s rt_wr_gen            /* the fifth write loads a register: banks, mirroring, PPU synchronisation */
+	TRACE_CALL 87
+	addq.b #1,nes+9
+	and.b #1,d6
+	lsl.b #4,d6
+	move.b nes+8,d7
+	lsr.b #1,d7
+	or.b d6,d7
+	move.b d7,nes+8
+	rts
+rt_wr_gen:
 	movem.l d0-d1/a0-a1,-(sp)
 	moveq #0,d0
 	move.w d7,d0

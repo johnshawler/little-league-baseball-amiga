@@ -32,6 +32,7 @@ typedef struct { uint8_t lo, hi, x, paloff, bgprio, hflip, vflip; } SpriteTile;
 typedef struct {
     int16_t  y;                       /* output line this context belongs to, -1: none */
     uint8_t  jlo, jhi;                /* tiles j (0..32) that are tracked */
+    uint8_t  t01ok;                   /* bit j: tile j (0,1) was fetched by the previous line (generic path); 0: the whole-line path fetches them when needed */
     uint8_t  mode, nspr, s0;          /* mode 1: sprite 0 only (hit test), 2: complete line; sprites on the line (0..8); slot 0 is sprite 0 */
     uint8_t  tlo[34], thi[34], tpal[34]; uint16_t tta[34];
     uint8_t  spx[8], slo[8], shi[8], spal[8], sprio[8], shf[8];
@@ -66,12 +67,14 @@ typedef struct {
 #endif
     uint8_t  rowok[240]; uint32_t rowsig[240];   /* signature of the inputs of the row now in the framebuffer (renderer: rows with unchanged inputs are not drawn again) */
     FpCtx    fc[2]; int fcur;                     /* fast model: fetch contexts of the line being output (fc[fcur]) and of the next line */
+    uint32_t ntv[64];                 /* fast model: write counters of the 32-byte rows of the two physical name tables (a row of the background cache is valid while its source rows are unchanged) */
     uint8_t  lt_cnt[240];             /* fast model: sprites in range per evaluation line (saturated at 255) */
     uint8_t  lt_idx[240][8];          /* first 8 sprites (OAM index) in range per evaluation line (valid when lt_full) */
     int16_t  lt_ocx[240];             /* dot (cx) at which the sprite overflow flag is set on this evaluation line: 0 none, -1 not computed yet */
     int      fp;                      /* this instance is driven by the fast model (the OAM address during sprite evaluation is then computed on demand) */
     int16_t  oa_line; uint8_t oa_start;
     int      lt_valid, lt_full, lt_large;  /* tables above built for the current OAM / sprite size (oam_dirty clears lt_valid) */
+    uint8_t  rowblank[240];           /* fast model: row is uniformly the backdrop colour (value+1), 0 = not known */
     uint8_t  rowdirty[240];           /* rows written to fb since the platform last cleared the flag (display change tracking) */
     int      palvar;                  /* palette RAM / emphasis / gray changed during visible lines (set by the PPU, cleared by the platform at the frame hook) */
     int      oam_dirty;               /* OAM written since the sprite coverage table of the state-only renderer was built */
@@ -81,10 +84,11 @@ typedef struct {
 } Ppu;
 
 typedef struct {
-    Mapper map; Ppu ppu;
+    Mapper map;
+    uint8_t joy[2]; uint8_t joy_latch[2]; uint8_t joy_shift[2]; uint8_t strobe, pad_;   /* joypads: at fixed offsets, the assembler fast paths of rt_x.s access them (see the static asserts in rt_x.c) */
+    Ppu ppu;
     uint8_t ram[2048];
     uint64_t cyc;
-    uint8_t joy[2]; uint8_t joy_latch[2]; uint8_t joy_shift[2]; uint8_t strobe;
 } Nes;
 extern Nes nes;
 

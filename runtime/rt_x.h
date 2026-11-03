@@ -2,6 +2,7 @@
 #ifndef RT_X_H
 #define RT_X_H
 #include <stdint.h>
+#define XRT_OFF_OPENBUS 194      /* offsetof(Rt,openbus) on the 68k, used by rt_x.s (checked by a static assert in rt_x.c) */
 typedef struct {
     uint8_t  nzc, vflag, misc, pad;     /* 0: pad (offset 3) = open-bus value for the next helper read; canonical flags: N,Z in P layout / V in bit 6 / I,D bits */
     int16_t  adj; uint16_t ptmp;        /* 4: access-cycle adjustment for the next helper call */

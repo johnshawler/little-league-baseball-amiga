@@ -18,7 +18,7 @@ static uint8_t vram_read(Nes *n, uint16_t a){
 static void vram_write(Nes *n, uint16_t a, uint8_t v){
     a&=0x3FFF;
     if(a<0x2000) return;
-    if(a<0x3F00){ P->nt[nt_off(&n->map,a)]=v; return; }
+    if(a<0x3F00){ uint16_t o=nt_off(&n->map,a); P->nt[o]=v; P->ntv[o>>5]++; return; }
     uint8_t i=a&0x1F; v&=0x3F;
     if((i&3)==0){ if(P->pal[i&0x0F]!=v||P->pal[(i&0x0F)|0x10]!=v) PALVAR(P); P->pal[i&0x0F]=v; P->pal[(i&0x0F)|0x10]=v; } else { if(P->pal[i]!=v) PALVAR(P); P->pal[i]=v; }
 }
@@ -138,7 +138,7 @@ static void draw_pixel(Nes *n){
     if(p->rend || (p->v&0x3F00)!=0x3F00){ c=pixel_color(p); idx=(c&3)?c:0; }
     else { idx=p->v&0x1F; (void)pixel_color(p); }
     uint8_t col=p->pal[idx];
-    if(p->draw){ p->fb[(p->line<<8)+p->cx-1]=PIXV(col,idx); p->rowdirty[p->line]=1; p->rowok[p->line]=0; }
+    if(p->draw){ p->fb[(p->line<<8)+p->cx-1]=PIXV(col,idx); p->rowdirty[p->line]=1; p->rowok[p->line]=0; p->rowblank[p->line]=0; }
 }
 
 static void process_scanline(Nes *n){
@@ -272,15 +272,30 @@ void ppu_reg_write(Nes *n, uint16_t a, uint8_t v){
  * Whole lines nothing can happen in are skipped in one step (v after m lines is closed form), so an idle frame costs a few hundred cycles.
  * Hidden pipeline registers of the per-dot model (tprev/tcur/tnext, shifters, oam2, st[]) are not maintained; the contexts above replace them.
  * ====================================================================================================================================== */
-long ppu_fast_lines, ppu_exotic;     /* statistics: lines drawn / situations the model only approximates (see ppu_exotic uses) */
+long ppu_fast_lines, ppu_exotic, ppu_st[16];
+#ifdef PPU_STATS
+#define ST(i) (ppu_st[i]++)
+#else
+#define ST(i) ((void)0)
+#endif
+#ifdef FP_NOFASTLINE
+#define FP_GENERIC 1
+#else
+#define FP_GENERIC 0
+#endif     /* statistics: lines drawn / situations the model only approximates (see ppu_exotic uses) */
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__==__ORDER_LITTLE_ENDIAN__
 #define EXB(k) ((((k)>>3)&1u)|((((k)>>2)&1u)<<8)|((((k)>>1)&1u)<<16)|(((k)&1u)<<24))     /* host byte order: the first pixel is the lowest byte */
 #else
 #define EXB(k) (((((k)>>3)&1u)<<24)|((((k)>>2)&1u)<<16)|((((k)>>1)&1u)<<8)|((k)&1u))      /* 68k: the first pixel is the top byte */
 #endif
 static const uint32_t expn[16]={EXB(0),EXB(1),EXB(2),EXB(3),EXB(4),EXB(5),EXB(6),EXB(7),EXB(8),EXB(9),EXB(10),EXB(11),EXB(12),EXB(13),EXB(14),EXB(15)};   /* 4 pattern bits -> 4 bytes 0/1 */
+typedef uint32_t __attribute__((may_alias)) u32a;                     /* word access to byte arrays / structs (may alias anything) */
+typedef uint32_t __attribute__((may_alias, aligned(1))) u32u;         /* the same, possibly unaligned */
 #if defined(PPU_FB8) || defined(PPU_FB5)
 #define FB_BYTES 1
+#endif
+#ifdef PPU_FB5
+#define FP_FASTLINE 1          /* 5-plane build: background row cache and tight whole-line loops (fp_line) */
 #endif
 #ifdef PPU_FB5
 #define CV(i) ((uint8_t)(i))
@@ -391,13 +406,12 @@ static inline int ctx_mode(Nes*n,int y){
 }
 static void ctx_init(Nes*n,FpCtx*c,int y,int mode){
     Ppu*p=P; int e=y-1;
-    c->y=(int16_t)y; c->mode=(uint8_t)mode; c->nspr=0; c->s0=0; c->jlo=0; c->jhi=32;
+    c->y=(int16_t)y; c->mode=(uint8_t)mode; c->nspr=0; c->s0=0; c->jlo=0; c->jhi=32; c->t01ok=0;
     if(mode==1){ int sx=p->oam[3]; c->jlo=(uint8_t)(sx>>3); c->jhi=(uint8_t)(((sx+14)>>3)>32?32:((sx+14)>>3)); if(e>=0 && s0_in_range(p,e)){ c->nspr=1; c->s0=1; } }
     else if(e>=0){
         lt_ensure(n); if(!p->lt_full) lt_build_full(n);
         int cnt=p->lt_cnt[e]; c->nspr=(uint8_t)(cnt>8?8:cnt); c->s0=(uint8_t)(c->nspr && p->lt_idx[e][0]==0);
     }
-    for(int k=0;k<8;k++){ c->slo[k]=c->shi[k]=0; c->spx[k]=0xFF; c->spal[k]=0; c->sprio[k]=0; c->shf[k]=0; }
 }
 static void fetch_sprite(Nes*n,FpCtx*c,int k){
     Ppu*p=P; int e=c->y-1;
@@ -428,6 +442,7 @@ static void ctx_build(Nes*n,FpCtx*c,int y,int mode,uint16_t vline){
         if(j>=c->jlo && j<=c->jhi) fetch_tile(n,c,j,0,va,0,8);
         va=incx_n(va,1);
     }
+    c->t01ok=3;
 }
 /* v at the output start of the line being processed, from the live v after dot c0 (c0 < 257) */
 static uint16_t vline_live(Ppu*p,int c0){ int k= (p->rend_prev && c0>=8) ? (c0>256?32:(c0>>3)) : 0; return decx_n(decx_n(p->v,k),2); }
@@ -449,6 +464,7 @@ static void draw_range(Nes*n,int L,int x0,int x1){
     Ppu*p=P; FpCtx*c=&p->fc[p->fcur];
     uint8_t emph=p->emph, gm=p->gray?0x30:0x3F; (void)gm; (void)emph;
     fbpix*row=&p->fb[L<<8]; const fbpix EM=FBVAL(0,emph);
+    p->rowblank[L]=0;
     if(!p->rend){
         p->rowdirty[L]=1;
         int idx= ((p->v&0x3F00)!=0x3F00) ? 0 : (p->v&0x1F);
@@ -467,17 +483,19 @@ static void draw_range(Nes*n,int L,int x0,int x1){
         for(int i=0;i<c->nspr;i++){ uint32_t w=c->slo[i]|((uint32_t)c->shi[i]<<8)|((uint32_t)c->spx[i]<<16); sig=((sig<<5)|(sig>>27))^w; sig*=0x01000193u;
             w=c->spal[i]|((uint32_t)c->sprio[i]<<8)|((uint32_t)c->shf[i]<<9); sig=((sig<<5)|(sig>>27))^w; sig*=0x01000193u; }
 #ifndef PPU_FB5
-        { const uint32_t*pl=(const uint32_t*)p->pal; for(int i=0;i<8;i++){ sig=((sig<<5)|(sig>>27))^pl[i]; sig*=0x01000193u; } }
+        { const u32a*pl=(const u32a*)p->pal; for(int i=0;i<8;i++){ sig=((sig<<5)|(sig>>27))^pl[i]; sig*=0x01000193u; } }
 #endif
         { uint32_t w=(uint32_t)fx|((uint32_t)p->min_bg<<3)|((uint32_t)(p->min_sp&0x1FF)<<12)|((uint32_t)gm<<21)|((uint32_t)emph<<27)|((uint32_t)p->sp_en<<30)|((uint32_t)p->bg_en<<31); sig=((sig<<5)|(sig>>27))^w; sig*=0x01000193u; sig^=c->nspr; }
-#ifndef NOSIG
+#if !defined(NOSIG) && !defined(FP_FASTLINE)
         if(p->rowok[L] && p->rowsig[L]==sig) return;
-#endif
         p->rowsig[L]=sig; p->rowok[L]=1;
+#else
+        p->rowok[L]=0;
+#endif
     } else p->rowok[L]=0;
     p->rowdirty[L]=1;
     uint8_t bgraw[272] __attribute__((aligned(4))), bgc[272] __attribute__((aligned(4)));
-    uint32_t*raw32=(uint32_t*)bgraw; uint32_t*c32=(uint32_t*)bgc; uint8_t pal0=CV(0);
+    u32a*raw32=(u32a*)bgraw; u32a*c32=(u32a*)bgc; uint8_t pal0=CV(0);
     for(int j=j0;j<=j1;j++){
         uint8_t lo=c->tlo[j], hi=c->thi[j], pbase=c->tpal[j];
         uint32_t r0=expn[lo>>4]|(expn[hi>>4]<<1), r1=expn[lo&15]|(expn[hi&15]<<1);
@@ -533,8 +551,124 @@ static void hit_scan(Nes*n,int L,int a,int c1){
     if(hit_find(p,c,a,c1)) p->sp0hit=1;
 }
 
+/* ---- whole lines, 5-plane build: background cache + tight loops ------------------------------------------------------------------- */
+#ifdef PPU_FB5
+#endif
+#ifdef FP_FASTLINE
+static inline void st32(uint8_t*d,uint32_t v){ *(u32u*)d=v; }
+static uint32_t bgtab[4][256]; static int bgtab_ready;          /* (hi nibble, lo nibble) of a pattern row -> 4 palette RAM indices (palette number a: 4*a + 2 bit value, 0 for value 0) */
+static void bgtab_init(void){
+    for(int a=0;a<4;a++) for(int i=0;i<256;i++){
+        uint8_t b[4]; int hi=i>>4, lo=i&15;
+        for(int k=0;k<4;k++){ int bit=3-k; int raw=((lo>>bit)&1)|(((hi>>bit)&1)<<1); b[k]=(uint8_t)(raw? raw+4*a : 0); }
+        st32((uint8_t*)&bgtab[a][i], 0); { uint8_t*d=(uint8_t*)&bgtab[a][i]; d[0]=b[0]; d[1]=b[1]; d[2]=b[2]; d[3]=b[3]; }
+    }
+    bgtab_ready=1;
+}
+typedef struct { uint16_t vl, fl; uint8_t c_lo, c_hi; uint8_t t01[6]; uint32_t nv[4]; } BgKey;   /* every input of the background pixels of a row (compared exactly) */
+static BgKey bgkey[240]; static uint8_t bgok[240];
+static uint8_t bgrow[240][272] __attribute__((aligned(4)));       /* background pixels (palette RAM indices) of each row as last built: 8 bytes margin, 256 pixels, 8 bytes margin */
+static uint16_t rsk[240]; static uint32_t rsw[240][8];            /* sprites in the frame buffer row: count | min_sp<<8, packed slots */
+static inline int bgkey_eq(const BgKey*a,const BgKey*b){ const u32a*x=(const u32a*)a,*y=(const u32a*)b; return !((x[0]^y[0])|(x[1]^y[1])|(x[2]^y[2])|(x[3]^y[3])|(x[4]^y[4])|(x[5]^y[5])|(x[6]^y[6])); }
+static __attribute__((noinline)) void fp_blank_line(Nes*n,int L){
+    Ppu*p=P; int idx= ((p->v&0x3F00)!=0x3F00) ? 0 : (p->v&0x1F);
+    if(p->rowblank[L]==idx+1) return;
+    uint32_t c=(uint32_t)idx*0x01010101u; u32a*r=(u32a*)&p->fb[L<<8]; for(int x=0;x<64;x++) r[x]=c;
+    p->rowblank[L]=(uint8_t)(idx+1); p->rowok[L]=0; p->rowdirty[L]=1;
+}
+/* whole line L (0..239), dots 1..340, rendering on, pixels drawn.  The context of the line (sprites; tiles 0 and 1 unless the generic path fetched them) was
+ * prepared by the line before.  The background row is rebuilt only when one of its inputs changed (BgKey, compared exactly). */
+static uint8_t ntbase_m=255; static uint16_t ntbase[4];          /* physical name table offset of logical name table 0..3 for the current mirroring */
+static __attribute__((noinline)) void fp_line(Nes*n,int L){
+    Ppu*p=P; FpCtx*cc=&p->fc[p->fcur], *cn=&p->fc[p->fcur^1];
+    if(!bgtab_ready) bgtab_init();
+    uint16_t v0=p->v;                                   /* v after dot 340 of the line before */
+    uint16_t vl=decx_n(v0,2);                           /* tile j of this line is fetched with vl+j */
+    uint16_t vc=(uint16_t)((inc_y16(v0)&~0x041F)|(p->t&0x041F));   /* v after the horizontal copy at dot 257: tile j of the next line uses vc+j */
+    if(cc->y!=L || cc->mode!=2){ ppu_exotic++; ctx_build(n,cc,L,2,vl); }
+    ST(0);
+    if(!p->spovf){ lt_ensure(n); if(p->lt_cnt[L]>=8){ int o=lt_ovf_cx(n,L); if(o) p->spovf=1; } }
+    /* ---- background row key */
+    int fx=p->fx, clipn= p->bg_en ? (p->min_bg>256?256:p->min_bg) : 256;
+    int cy=(vl>>5)&31, x0=vl&31, fy=(vl>>12)&7;
+    if(ntbase_m!=n->map.mirror){ ntbase_m=n->map.mirror; for(int i=0;i<4;i++) ntbase[i]=nt_off(&n->map,(uint16_t)(0x2000+i*0x400)); }
+    int ntA=(vl>>10)&3, ntB=ntA^1;
+    uint16_t rA=(uint16_t)(ntbase[ntA]+cy*32), rB=(uint16_t)(ntbase[ntB]+cy*32), aA=(uint16_t)(ntbase[ntA]+0x3C0+(cy>>2)*8), aB=(uint16_t)(ntbase[ntB]+0x3C0+(cy>>2)*8);
+    BgKey k; k.vl=vl; k.fl=(uint16_t)((p->bgpat?1:0)|(n->map.mirror<<1)|(fx<<3)|(clipn<<6)); k.c_lo=(uint8_t)(n->map.chr_lo>>12); k.c_hi=(uint8_t)(n->map.chr_hi>>12);
+    k.t01[0]=k.t01[1]=k.t01[2]=k.t01[3]=k.t01[4]=k.t01[5]=0;
+    k.nv[0]=p->ntv[rA>>5]; k.nv[1]=p->ntv[rB>>5]; k.nv[2]=p->ntv[aA>>5]; k.nv[3]=p->ntv[aB>>5];
+    int pre = (cc->t01ok==3);                            /* tiles 0,1 were fetched earlier under possibly different parameters: they are part of the key */
+    if(pre){ k.t01[0]=cc->tlo[0]; k.t01[1]=cc->thi[0]; k.t01[2]=cc->tpal[0]; k.t01[3]=cc->tlo[1]; k.t01[4]=cc->thi[1]; k.t01[5]=cc->tpal[1]; k.vl|=0; k.fl|=0x8000; }
+    int bgsame = bgok[L] && bgkey_eq(&k,&bgkey[L]);
+#ifdef FPDBG
+    if(L==FPDBG_L && p->frame>=FPDBG_F0 && p->frame<=FPDBG_F1){ extern int fprintf(void*,const char*,...); extern void*stderr; fprintf(stderr,"fp_line L=%d frame %u: vl=%04x fl=%04x pre=%d bgsame=%d (ok %d) fx=%d clipn=%d v0=%04x t=%04x nv=%u,%u,%u,%u t01ok=%d cc.y=%d mode %d\n",L,p->frame,vl,k.fl,pre,bgsame,bgok[L],fx,clipn,v0,p->t,k.nv[0],k.nv[1],k.nv[2],k.nv[3],cc->t01ok,cc->y,cc->mode); }
+#endif
+    /* sprite 0 hit: the background tiles under sprite 0 */
+    if(!p->sp0hit && p->bg_en && p->sp_en && cc->s0){
+        int sx=cc->spx[0], j0=sx>>3, j1=(sx+14)>>3; if(j1>32) j1=32;
+        for(int j=j0;j<=j1;j++){ if(j<2 && pre) continue; fetch_tile(n,cc,j,0,incx_n(vl,j),0,8); }
+        if(hit_find(p,cc,1,256)) p->sp0hit=1;
+    }
+    uint8_t*row=&bgrow[L][8];
+    if(!bgsame){ ST(1);
+        const uint8_t*chrb=n->map.chr+(p->bgpat? n->map.chr_hi : n->map.chr_lo);
+        const uint8_t*ntpA=p->nt+rA, *ntpB=p->nt+rB, *atA=p->nt+aA, *atB=p->nt+aB; int ysh=(cy&2)<<1;
+        uint8_t*dst=row-fx;
+        if(!pre){ for(int j=0;j<2;j++) fetch_tile(n,cc,j,0,incx_n(vl,j),0,8); }
+        for(int j=0;j<2;j++){ uint8_t lo=cc->tlo[j], hi=cc->thi[j]; const uint32_t*tb=bgtab[cc->tpal[j]>>2]; st32(dst+8*j,tb[(hi&0xF0)|(lo>>4)]); st32(dst+8*j+4,tb[((hi&0x0F)<<4)|(lo&0x0F)]); }
+        int j=2, xx=x0+2;
+        for(;xx<32 && j<=32;j++,xx++){
+            int ti=ntpA[xx]; int a=(atA[xx>>2]>>((xx&2)|ysh))&3;
+            const uint8_t*cp=chrb+((ti<<4)|fy); uint8_t lo=cp[0], hi=cp[8]; const uint32_t*tb=bgtab[a];
+            st32(dst+8*j,tb[(hi&0xF0)|(lo>>4)]); st32(dst+8*j+4,tb[((hi&0x0F)<<4)|(lo&0x0F)]);
+        }
+        for(xx-=32;j<=32;j++,xx++){
+            int ti=ntpB[xx]; int a=(atB[xx>>2]>>((xx&2)|ysh))&3;
+            const uint8_t*cp=chrb+((ti<<4)|fy); uint8_t lo=cp[0], hi=cp[8]; const uint32_t*tb=bgtab[a];
+            st32(dst+8*j,tb[(hi&0xF0)|(lo>>4)]); st32(dst+8*j+4,tb[((hi&0x0F)<<4)|(lo&0x0F)]);
+        }
+        { u32a*r=(u32a*)row; int q=clipn>>2; for(int i=0;i<q;i++) r[i]=0; }     /* clipped pixels (left 8 or all): backdrop */
+        bgkey[L]=k; bgok[L]=1;
+    }
+    /* ---- sprites of the row */
+    uint32_t pw[8]; int na=0;
+    if(p->sp_en && p->min_sp<256){
+        for(int i=0;i<cc->nspr;i++){ if(!(cc->slo[i]|cc->shi[i])) continue;
+            pw[na++]=(uint32_t)cc->spx[i]|((uint32_t)cc->slo[i]<<8)|((uint32_t)cc->shi[i]<<16)|((uint32_t)((cc->spal[i]>>2)&3)<<24)|((uint32_t)cc->sprio[i]<<26)|((uint32_t)cc->shf[i]<<27); }
+    }
+    uint16_t sk=(uint16_t)(na|((p->min_sp&0xFF)<<8));
+    int same=0;
+    if(bgsame && p->rowok[L] && rsk[L]==sk){ same=1; for(int i=0;i<na;i++) if(rsw[L][i]!=pw[i]){ same=0; break; } }
+    if(!same){ ST(2); if(na) ST(3);
+        uint8_t*fb=&p->fb[L<<8];
+        { const u32a*s=(const u32a*)row; u32a*d=(u32a*)fb; for(int i=0;i<64;i++) d[i]=s[i]; }
+        if(na){
+            uint32_t cl[8]={0,0,0,0,0,0,0,0}; int minsp=p->min_sp;
+            for(int i=0;i<na;i++){
+                uint32_t w=pw[i]; int sx=w&255; uint8_t lo=(uint8_t)(w>>8), hi=(uint8_t)(w>>16); uint8_t pal=(uint8_t)(((w>>24)&3)*4+0x10); int prio=(w>>26)&1, hf=(w>>27)&1;
+                for(int kx=0;kx<8;kx++){
+                    int x=sx+kx; if(x>255) break; if(x<minsp) continue;
+                    int b= hf ? kx : 7-kx; int sc=((lo>>b)&1)|(((hi>>b)&1)<<1); if(!sc) continue;
+                    if(cl[x>>5]&(1u<<(x&31))) continue; cl[x>>5]|=1u<<(x&31);
+                    if(!(fb[x]&3) || !prio) fb[x]=(uint8_t)(pal+sc);
+                }
+            }
+        }
+        rsk[L]=sk; for(int i=0;i<na;i++) rsw[L][i]=pw[i];
+        p->rowok[L]=1; p->rowdirty[L]=1; p->rowblank[L]=0;
+    }
+    /* ---- the line after: sprites (tiles 0 and 1 are fetched when needed); state */
+    if(L<239){
+        int y=L+1, m=ctx_mode(n,y);
+        if(m){ ST(4); ctx_init(n,cn,y,m); for(int kk=0;kk<cn->nspr;kk++) fetch_sprite(n,cn,kk); if(m==1) for(int j=cn->jlo;j<=1&&j<=cn->jhi;j++) fetch_tile(n,cn,j,0,incx_n(vc,j),0,8); }
+        else cn->y=-1;
+    }
+    p->v=incx_n(vc,2); p->oamaddr=0;
+}
+#endif
+
 /* ---- one piece: the dots a..c1 (1 <= a <= c1 <= 340) of line L; parameters constant, no pending update ---------------------------------- */
-static void fp_piece(Nes*n,int L,int a,int c1){
+static __attribute__((noinline)) void fp_piece(Nes*n,int L,int a,int c1){
     Ppu*p=P; int rend=p->rend;
     if(L>=240){
         if(L==241 && a<=1 && c1>=1){ if(!p->prevent_vbl){ p->vbl=1; if(p->ctrl&0x80) p->nmi_level=1; } p->prevent_vbl=0; }
@@ -555,7 +689,7 @@ static void fp_piece(Nes*n,int L,int a,int c1){
             if(cn->y!=y){ int m=ctx_mode(n,y); if(m) ctx_init(n,cn,y,m); else cn->y=-1; }
             if(cn->y==y){
                 for(int k=0;k<cn->nspr;k++){ int d=261+8*k; if(d>=a && d<=c1) fetch_sprite(n,cn,k); }
-                for(int j=cn->jlo;j<=1 && j<=cn->jhi;j++){ int b=321+8*j; if(b+6>=a && b<=c1){ uint16_t v=v_adv(p,p->v,L,a-1,b>a?b:a); fetch_tile(n,cn,j,b,v,a,c1); } }
+                for(int j=cn->jlo;j<=1 && j<=cn->jhi;j++){ int b=321+8*j; if(b+6>=a && b<=c1){ uint16_t v=v_adv(p,p->v,L,a-1,b>a?b:a); fetch_tile(n,cn,j,b,v,a,c1); if(b+6<=c1) cn->t01ok|=(uint8_t)(1<<j); } }
             }
         }
         if(L>=0 && a<=247 && cc->y==L){            /* tiles 2..32 of this line */
@@ -569,6 +703,8 @@ static void fp_piece(Nes*n,int L,int a,int c1){
         int e=c1<256?c1:256;
         if(rend){
             if(p->draw || (!p->sp0hit && p->bg_en && p->sp_en && s0_in_range(p,L-1))) ctx_ensure(n,L,a);
+            { FpCtx*cc=&p->fc[p->fcur];     /* the whole-line path of the line before leaves tiles 0 and 1 to be fetched now (parameters unchanged since) */
+              if(cc->y==L && cc->mode==2 && cc->t01ok!=3){ uint16_t vl=(a==1)?decx_n(p->v,2):vline_live(p,a-1); fetch_tile(n,cc,0,0,vl,0,8); fetch_tile(n,cc,1,0,incx_n(vl,1),0,8); cc->t01ok=3; } }
             hit_scan(n,L,a,e);
         }
         if(p->draw) draw_range(n,L,a-1,e);
@@ -597,6 +733,17 @@ void ppu_fp_run(Nes*n,uint64_t target){
             if(!trans && room>=341){
                 int m=0;
                 if(L>=241 && L<=259){ m=260-L; if((uint64_t)m>room/341) m=(int)(room/341); if(m>0){ p->dots+=341ull*m; p->line+=m; return; } }
+#ifdef FP_FASTLINE
+                else if(L>=-1 && L<=238 && p->draw && !FP_GENERIC){
+                    int mm=239-L; if((uint64_t)mm>room/341) mm=(int)(room/341);
+                    for(int i=0;i<mm;i++){
+                        p->dots+=341; p->line++; p->cx=340;
+                        p->fcur^=1; p->fc[p->fcur^1].y=-1;
+                        if(p->rend) fp_line(n,p->line); else { p->fc[0].y=p->fc[1].y=-1; fp_blank_line(n,p->line); }
+                    }
+                    continue;
+                }
+#endif
                 else if(L>=-1 && L<=238 && !p->draw){
                     int mm=239-L; if((uint64_t)mm>room/341) mm=(int)(room/341);
                     /* lines that have work: sprite-0 window, overflow lines */
