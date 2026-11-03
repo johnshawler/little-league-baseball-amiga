@@ -102,3 +102,19 @@ rt_dbg_blk:
 	lea 12(sp),sp
 	movem.l (sp)+,d0-d1/a0-a1
 	rts
+
+/* skip: ctx->adj = kind; d5 = budget.  Subtracts the cycles of the polls that can be skipped from d5. */
+	.globl rt_skip
+	.extern xrt_skip_c
+rt_skip:
+	movem.l d0-d1/a0-a1,-(sp)
+	move.w 4(a2),d1
+	ext.l d1
+	move.l d5,-(sp)
+	move.l d1,-(sp)
+	jsr xrt_skip_c
+	addq.l #8,sp
+	move.l d0,d6
+	movem.l (sp)+,d0-d1/a0-a1
+	sub.l d6,d5
+	rts

@@ -247,5 +247,141 @@ void ppu_reg_write(Nes *n, uint16_t a, uint8_t v){
     }
 }
 
-/* lazy synchronisation used by the runtime: run the per-dot model until `dots` dots have been executed.  Returns via nes.ppu.dots. */
+
+/* ======================================================================================================================================
+ * Fast path: whole visible lines without CPU activity are rendered by render_line_fast() instead of 341 calls of ppu_step().  The result
+ * (framebuffer row, v, flags and the complete pipeline state at the end of the line) is identical to the per-dot model.
+ * ====================================================================================================================================== */
+static void dec_x(Ppu*p){ uint16_t a=p->v; if((a&0x1F)==0) a=(a|0x1F)^0x400; else a--; p->v=a; }
+static inline uint16_t inc_y16(uint16_t a){
+    if((a&0x7000)!=0x7000) return (uint16_t)(a+0x1000);
+    a&=~0x7000; int y=(a&0x3E0)>>5; if(y==29){ y=0; a^=0x800; } else if(y==31) y=0; else y++; return (uint16_t)((a&~0x3E0)|(y<<5));
+}
+/* sprites visible on line y (evaluated on line y-1): fills sp[], returns the count; s0 = sprite 0 among them; ovf = more than 8 in range */
+typedef struct { uint8_t lo,hi,x,paloff,bgprio,hflip; } FSpr;
+static int eval_sprites_fast(Nes*n,int y,FSpr*sp,int*s0,int*ovf){
+    Ppu*p=P; int cnt=0; *s0=0; *ovf=0; int h=p->large?16:8; int L=y-1;
+    if(L<0) return 0;
+    for(int i=0;i<64;i++){
+        int sy=p->oam[i*4]; if(!(L>=sy && L<sy+h)) continue;
+        if(cnt==8){ *ovf=1; break; }
+        uint8_t ti=p->oam[i*4+1], at=p->oam[i*4+2], sx=p->oam[i*4+3];
+        if(i==0) *s0=1;
+        if(sy<240){
+            int vm=(at&0x80)!=0; int lo_= vm ? ((p->large?15:7)-(L-sy)) : (L-sy); uint16_t ta;
+            if(p->large) ta=(uint16_t)((((ti&1)?0x1000:0)|((ti&~1)<<4))+(lo_>=8?lo_+8:lo_)); else ta=(uint16_t)(((ti<<4)|p->sppat)+lo_);
+            sp[cnt].lo=vram_read(n,ta); sp[cnt].hi=vram_read(n,ta+8); sp[cnt].x=sx; sp[cnt].paloff=(uint8_t)(((at&3)<<2)|0x10); sp[cnt].bgprio=(at&0x20)!=0; sp[cnt].hflip=(at&0x40)!=0;
+        } else { sp[cnt].lo=sp[cnt].hi=0; sp[cnt].x=sx; sp[cnt].paloff=0; sp[cnt].bgprio=0; sp[cnt].hflip=0; sp[cnt].x=sx; }
+        cnt++;
+    }
+    return cnt;
+}
+long ppu_fast_lines;
+static void render_line_fast(Nes*n,int y,uint16_t vline){
+    Ppu*p=P; ppu_fast_lines++; uint16_t*row=&p->fb[y<<8];
+    uint16_t emph=(uint16_t)(p->emph<<6); uint8_t gm=p->gray?0x30:0x3F;
+    if(!p->rend){
+        int idx= ((p->v&0x3F00)!=0x3F00) ? 0 : (p->v&0x1F);
+        uint16_t c=(uint16_t)((p->pal[idx]&gm)|emph); for(int x=0;x<256;x++) row[x]=c; return;
+    }
+    /* background tiles of this line: tile j (0..32) uses the nametable column (coarse X0 + j) */
+    uint8_t tlo[34],thi[34],tpal[34];
+    uint16_t va=vline;
+    for(int j=0;j<33;j++){
+        uint8_t ti=vram_read(n,0x2000|(va&0x0FFF));
+        uint8_t sh=((va>>4)&4)|(va&2);
+        tpal[j]=(uint8_t)(((vram_read(n,0x23C0|(va&0x0C00)|((va>>4)&0x38)|((va>>2)&7))>>sh)&3)<<2);
+        uint16_t ta=(uint16_t)((ti<<4)|(va>>12)|p->bgpat);
+        tlo[j]=vram_read(n,ta); thi[j]=vram_read(n,ta+8);
+        if((va&0x1F)==31) va=(uint16_t)((va&~0x1F)^0x400); else va++;
+    }
+    FSpr sp[8]; int s0,ovf; int cnt=eval_sprites_fast(n,y,sp,&s0,&ovf);
+    if(ovf){ /* more than 8 sprites in range: the overflow flag follows the hardware's buggy evaluation, which only the per-dot model reproduces */
+        int sl=p->line,sc=p->cx; p->line=y-1; p->oamaddr=0; for(int cx=1;cx<=256;cx++){ p->cx=cx; sprite_eval(n); } p->line=sl; p->cx=sc; p->oamaddr=0; }
+    int fx=p->fx;
+    for(int x=0;x<256;x++){
+        int cx=x+1; uint8_t bgc=0, spbg=0; int j=(x+fx)>>3, b=7-((x+fx)&7);
+        if(cx>p->min_bg){ spbg=(uint8_t)(((tlo[j]>>b)&1)|(((thi[j]>>b)&1)<<1)); bgc=spbg; }
+        uint8_t col=(uint8_t)(tpal[j]+bgc);
+        if(cnt && cx>p->min_sp){
+            for(int i=0;i<cnt;i++){
+                int sh=cx-sp[i].x-1;
+                if(sh>=0&&sh<8){
+                    uint8_t sc= sp[i].hflip ? (uint8_t)(((sp[i].lo>>sh)&1)|(((sp[i].hi>>sh)&1)<<1)) : (uint8_t)((((sp[i].lo<<sh)&0x80)>>7)|(((sp[i].hi<<sh)&0x80)>>6));
+                    if(sc){
+                        if(i==0 && spbg && s0 && cx!=256 && p->bg_en && !p->sp0hit && cx>p->min_sp_std) p->sp0hit=1;
+                        if(p->sp_en && (bgc==0 || !sp[i].bgprio)) col=(uint8_t)(sp[i].paloff+sc);
+                        break;
+                    }
+                }
+            }
+        }
+        row[x]=(uint16_t)((p->pal[(col&3)?col:0]&gm)|emph);
+    }
+}
+/* make the pipeline state identical to the per-dot model after dot 340 of line ycomplete (rendering on); vline = v at output start of that line */
+static void reconstruct(Nes*n,int ycomplete,uint16_t vline){
+    Ppu*p=P;
+    p->line=ycomplete; p->v=inc_y16(vline); p->oamaddr=0;
+    for(int cx=1;cx<=256;cx++){ p->cx=cx; sprite_eval(n); }
+    for(int cx=257;cx<=340;cx++){ p->cx=cx; process_scanline(n); }
+    p->cx=340;
+}
+/* run the model until `dots` dots have been executed, using the fast path for whole visible lines. */
+void ppu_sync_fast(Nes *n, uint64_t dots){
+    Ppu*p=P;
+    while(p->dots<dots){
+        if(p->cx==340 && p->line>=-1 && p->line<=238 && p->rend==p->rend_prev && !p->need_update && !p->upd_delay){
+            int m=(int)((dots-p->dots)/341); if(m>239-p->line) m=239-p->line;
+            if(m>=1){
+                int y0=p->line+1; uint16_t vl=p->v, vlast;
+                if(p->rend){ dec_x(p); dec_x(p); vl=p->v; }          /* v at the output start of line y0 */
+                for(int i=0;i<m;i++){
+                    vlast=vl; render_line_fast(n,y0+i,vl);
+                    if(p->rend) vl=(uint16_t)((inc_y16(vl)&~0x41F)|(p->t&0x41F));
+                }
+                p->dots+=341ull*m;
+                if(p->rend) reconstruct(n,y0+m-1,vlast); else { p->line=y0+m-1; p->cx=340; }
+                continue;
+            }
+        }
+        ppu_step(n);
+    }
+}
+/* ---- prediction used to skip polling loops ---------------------------------------------------------------------------------------- */
+/* first column (cx 1..256) at which sprite 0 hits the background on line y, or 0; vline = v at the output start of the line */
+static int line_hit_cx(Nes*n,int y,uint16_t vline){
+    Ppu*p=P; int L=y-1; if(L<0||!p->rend||!p->bg_en) return 0;
+    int h=p->large?16:8, sy=p->oam[0]; if(!(L>=sy && L<sy+h) || sy>=240) return 0;
+    uint8_t ti=p->oam[1], at=p->oam[2], sx=p->oam[3];
+    int vm=(at&0x80)!=0, hm=(at&0x40)!=0; int lo_= vm ? ((p->large?15:7)-(L-sy)) : (L-sy); uint16_t ta;
+    if(p->large) ta=(uint16_t)((((ti&1)?0x1000:0)|((ti&~1)<<4))+(lo_>=8?lo_+8:lo_)); else ta=(uint16_t)(((ti<<4)|p->sppat)+lo_);
+    uint8_t slo=vram_read(n,ta), shi=vram_read(n,ta+8);
+    for(int k=0;k<8;k++){
+        int cx=sx+1+k; if(cx>256) break;
+        int sh=k; uint8_t sc= hm ? (uint8_t)(((slo>>sh)&1)|(((shi>>sh)&1)<<1)) : (uint8_t)((((slo<<sh)&0x80)>>7)|(((shi<<sh)&0x80)>>6));
+        if(!sc || cx==256 || !(cx>p->min_sp) || !(cx>p->min_sp_std) ) continue;
+        if(!(cx>p->min_bg)) continue;
+        int x=cx-1, j=(x+p->fx)>>3, b=7-((x+p->fx)&7);
+        uint16_t va=vline; for(int q=0;q<j;q++){ if((va&0x1F)==31) va=(uint16_t)((va&~0x1F)^0x400); else va++; }
+        uint8_t nt=vram_read(n,0x2000|(va&0x0FFF)); uint16_t pa=(uint16_t)((nt<<4)|(va>>12)|p->bgpat);
+        uint8_t blo=vram_read(n,pa), bhi=vram_read(n,pa+8);
+        if(((blo>>b)&1)|((bhi>>b)&1)) return cx;
+    }
+    return 0;
+}
+/* predicts the sprite-0 hit of the current frame, assuming nothing changes: returns the number of dots executed once the hit dot has run, or 0 */
+uint64_t ppu_predict_hit(Nes*n){
+    Ppu*p=P; if(!p->rend||p->rend!=p->rend_prev||!p->bg_en||!p->sp_en||p->sp0hit) return 0;
+    int64_t cur=(int64_t)(p->line+1)*341+p->cx;
+    int yn=p->line+1; uint16_t vl;
+    if(p->line==-1){ uint16_t vert=(p->cx<=304)?(p->t&0x7BE0):(p->v&0x7BE0); vl=(uint16_t)(vert|(p->t&0x41F)); }
+    else { uint16_t v=p->v; if(p->cx<256) v=inc_y16(v); vl=(uint16_t)((v&0x7BE0)|(p->t&0x41F)); }
+    for(int y=yn;y<=239;y++){
+        int cx=line_hit_cx(n,y,vl);
+        if(cx) return p->dots+(uint64_t)(((int64_t)(y+1)*341+cx)-cur);
+        vl=(uint16_t)((inc_y16(vl)&~0x41F)|(p->t&0x41F));
+    }
+    return 0;
+}
 void ppu_sync(Nes *n, uint64_t dots){ while(n->ppu.dots<dots) ppu_step(n); }

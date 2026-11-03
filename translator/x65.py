@@ -180,6 +180,7 @@ class Gen:
     def gen_block(self,b):
         self.cur=[]; self.b=b; key=b.key; ins=b.ins; self.cum=0; self.fnz=None; self.fc=None; self.cconst=None
         self.tot=sum(i.cyc for i in ins)
+        self.loopkind=self.detect_wait(b)
         npen=sum(1 for i in ins if i.m in PENALTY_READ and ((i.mode in('abx','aby') and (i.arg&0xFF)!=0) or i.mode=='izy'))
         self.cur.append(label(key)+':')
         slow=self.newlab()
@@ -197,6 +198,14 @@ class Gen:
         self.out.extend(self.cur)
         for (l,lines) in self.stubs: self.out.append(l+':'); self.out.extend('\t'+s for s in lines)
         self.stubs=[]
+    def detect_wait(self,b):
+        """the two $2002 polling loops of the NMI handler: they only wait for a PPU flag, so their polls can be skipped analytically"""
+        ins=b.ins; key=b.key
+        def poll(i): return i.m=='BIT' and i.mode=='abs' and i.arg==0x2002
+        def self_branch(i,m): return i.m==m and (ctx_of(i.ctx,i.target()),i.target())==key
+        if len(ins)==2 and poll(ins[0]) and self_branch(ins[1],'BVS'): return 0
+        if len(ins)==3 and poll(ins[0]) and ins[1].m=='BMI' and self_branch(ins[2],'BVC'): return 1
+        return None
     def exit_fall(self,b):
         t=b.fall
         if t in self.entries: self.e(f'jmp {label(t)}')
@@ -482,6 +491,7 @@ class Gen:
         lines=[]
         if k>0: lines.append(f'add.l #{k},d5')
         elif k<0: lines.append(f'sub.l #{-k},d5')
+        if self.loopkind is not None and tk==self.b.key and i is self.b.ins[-1]: lines.append(f'move.w #{self.loopkind},(4,a2)'); lines.append('jsr rt_skip')
         if tk in self.entries: lines.append(f'jmp {label(tk)}')
         else: lines.append(f'move.w #0x{t:X},d7'); lines.append('jmp rt_unk')
         l=self.newlab(); self.stubs.append((l,lines)); self.e(f'b{cond} {l}')

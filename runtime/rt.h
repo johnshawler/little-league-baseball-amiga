@@ -40,4 +40,5 @@ uint64_t rt_compute_limit(void);
 uint8_t rt_io_rd(uint16_t addr, uint64_t c);
 void    rt_io_wr(uint16_t addr, uint8_t v, uint64_t c);
 void    ppu_sync(Nes *n, uint64_t dots);
+void    ppu_sync_fast(Nes *n, uint64_t dots);
 #endif

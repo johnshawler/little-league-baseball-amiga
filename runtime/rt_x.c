@@ -106,3 +106,32 @@ void xrt_dbg_c(uint32_t pc, int32_t d5, int32_t tot){
     }
     xchk_n++;
 }
+
+/* skip the polls of a $2002 wait loop that cannot see a change yet.  kind 0: BIT $2002 / BVS self (waits for the sprite-0 flag to clear, 7 cycles per
+ * iteration); kind 1: BIT $2002 / BMI out / BVC self (waits for vblank or the sprite-0 hit, 9 cycles).  Called when the loop is about to be taken
+ * again; returns the number of cycles to skip (a whole number of iterations, all of which would have read "not yet"). */
+extern int rt_fast_ppu;
+uint64_t ppu_predict_hit(Nes *n);
+int32_t xrt_skip_c(int32_t kind, int32_t d5){
+    Ppu *p=&nes.ppu; uint64_t now=rt.limit-(int64_t)d5;
+    if(!rt_fast_ppu) return 0;
+    ppu_sync_rt(3*now+5);
+    if(p->rend!=p->rend_prev||p->need_update) return 0;
+    if(kind==1 && p->line>=240) return 0;               /* the hit of the next frame is not predicted from inside vblank */
+    int64_t cur=(int64_t)(p->line+1)*341+p->cx; uint64_t T=0; int Li=kind?10:7;
+    uint64_t tvbl=p->dots+((242LL*341+1)-cur>0 ? (242LL*341+1)-cur : (242LL*341+1)-cur+89341);
+    if(kind==0){
+        if(!p->sp0hit) return 0;                        /* flag already clear: the next poll exits */
+        T=p->dots+(89342-cur);                          /* dot that clears the flag: first dot of the pre-render line */
+        if(tvbl<T) T=tvbl;                              /* (never skip over the vblank start) */
+    } else {
+        uint64_t th=ppu_predict_hit(&nes); T=tvbl; if(th && th<T) T=th;
+    }
+    uint64_t c0=now+4, cmin=(T<=4)?0:(T-4+2)/3;          /* first read that can see the change */
+    if(cmin<=c0) return 0;
+    if(getenv("XSKIPDBG")&&now>10273000&&now<10290000) fprintf(stderr,"skip kind %d now %llu line %d cx %d T %llu tvbl %llu cmin %llu\n",(int)kind,(unsigned long long)now,p->line,p->cx,(unsigned long long)T,(unsigned long long)tvbl,(unsigned long long)cmin);
+    uint64_t n=(cmin-c0+Li-1)/Li;
+    if(rt.limit<=now+64) return 0;
+    uint64_t nmax=(rt.limit-now-64)/Li; if(n>nmax) n=nmax;
+    return (int32_t)(n*Li);
+}
