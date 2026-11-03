@@ -204,6 +204,9 @@ class Gen:
         ins=b.ins; key=b.key
         def poll(i): return i.m=='BIT' and i.mode=='abs' and i.arg==0x2002
         def self_branch(i,m): return i.m==m and (ctx_of(i.ctx,i.target()),i.target())==key
+        if len(ins)>=2 and ins[0].m=='LDA' and self.is_ram_operand(ins[0]) and ins[0].mode in('zp','abs') and ins[1].m in('BNE','BEQ','BPL','BMI') and self_branch(ins[1],ins[1].m):
+            t=ins[1].target(); cross=(ins[1].nxt&0xFF00)!=(t&0xFF00)
+            return ('idle',ins[0].cyc+2+(2 if cross else 1))
         if len(ins)==2 and poll(ins[0]) and self_branch(ins[1],'BVS'): return 0
         if len(ins)==3 and poll(ins[0]) and ins[1].m=='BMI' and self_branch(ins[2],'BVC'): return 1
         return None
@@ -492,7 +495,12 @@ class Gen:
         lines=[]
         if k>0: lines.append(f'add.l #{k},d5')
         elif k<0: lines.append(f'sub.l #{-k},d5')
-        if self.loopkind is not None and tk==self.b.key and i is self.b.ins[-1]: lines.append(f'move.w #{self.loopkind},(4,a2)'); lines.append('jsr rt_skip')
+        if isinstance(self.loopkind,tuple) and tk==self.b.key and i is self.b.ins[1]:
+            Li=self.loopkind[1]
+            # idle loop on a RAM flag that only an interrupt can change: skip whole iterations up to two before the cycle limit
+            l2=self.newlab()
+            lines+= ['move.l d5,d7',f'sub.l #{2*Li+Li},d7',f'ble.s {l2}',f'divu.l #{Li},d7',f'mulu.l #{Li},d7','sub.l d7,d5',l2+':']
+        elif self.loopkind is not None and tk==self.b.key and i is self.b.ins[-1]: lines.append(f'move.w #{self.loopkind},(4,a2)'); lines.append('jsr rt_skip')
         if tk in self.entries: lines.append(f'jmp {label(tk)}')
         else: lines.append(f'move.w #0x{t:X},d7'); lines.append('jmp rt_unk')
         l=self.newlab(); self.stubs.append((l,lines)); self.e(f'b{cond} {l}')
