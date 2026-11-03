@@ -81,11 +81,13 @@ static void on_frame(long f)
     if (lag > 0) st_late++;
     if ((uint32_t)lag > st_maxlag) st_maxlag = (uint32_t)lag;
 
-    /* 2. picture: skipped while behind real time (at most DISPLAY_SKIP_MAX frames in a row) */
-    if (lag > 0 && skip_run < DISPLAY_SKIP_MAX) { skip_run++; st_dskip++; }
+    /* 2. picture: frames decided as "not displayed" before they started (nes.ppu.draw = 0: the PPU computes only state effects, no pixels) are skipped; while behind
+     * real time at most DISPLAY_SKIP_MAX frames in a row are not drawn */
+    int drawn = nes.ppu.draw;
+    if (!drawn) { skip_run++; st_dskip++; }
     else {
         skip_run = 0; t0 = plat_eclock();
-        if (display_frame(nes.ppu.fb)) st_dconv++;
+        if (display_frame(nes.ppu.fb, nes.ppu.rowdirty)) st_dconv++;
         st_disp += e_since(t0);
 #ifdef TELEM
         {
@@ -99,9 +101,15 @@ static void on_frame(long f)
 #endif
     }
 
+    /* decide whether the NEXT frame is drawn: late (or still late) -> not, unless DISPLAY_SKIP_MAX frames have been skipped in a row */
+#if defined(STOP_AT) || defined(ALWAYS_DRAW)
+    nes.ppu.draw = 1;
+#else
+    nes.ppu.draw = (lag > 0 && skip_run < DISPLAY_SKIP_MAX) ? 0 : 1;
+#endif
 #ifdef STOP_AT      /* test builds: show the picture of frame STOP_AT (hook index, as FBDUMP of tools/rt_host.c) and stop */
     if (f == STOP_AT) {
-        while (!display_frame(nes.ppu.fb)) plat_wait_vbl();
+        while (!display_frame(nes.ppu.fb, nes.ppu.rowdirty)) plat_wait_vbl();
         for (;;) __asm__ volatile("stop #0x2000");
     }
 #endif
@@ -161,7 +169,7 @@ void main(void)
 #ifdef DISPLAY_TEST_FLIP     /* no conversion: only the buffer flip logic (which game frames can be shown on a 50 Hz display) */
         int r = 0; if (!plat_show_pending()) { plat_show(k & 1); r = 1; }
 #else
-        int r = display_frame(dtest_frames + (k & 1) * 61440);
+        int r = display_frame(dtest_frames + (k & 1) * 61440, 0);
 #endif
         uint32_t e = e_since(t0);
         if (r) { conv++; e_conv += e; pairs += display_pairs_last; if (e > e_max) e_max = e; } else skipped++;

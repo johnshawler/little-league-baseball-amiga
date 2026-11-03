@@ -5,7 +5,7 @@
 
 extern const uint32_t nes_rgb[256];
 extern uint16_t c2p_uni_words[256][8];
-extern long c2p_frame(const uint8_t *src, uint8_t *dst, uint8_t *shadow);
+extern long c2p_frame(const uint8_t *src, uint8_t *dst, uint8_t *shadow, uint8_t *rowflags);
 extern long c2p_frame_all(const uint8_t *src, uint8_t *dst);
 extern void c2p_pair(const uint8_t *src, uint8_t *dst);
 
@@ -14,6 +14,7 @@ uint8_t display_shadow[2][240 * 256] __attribute__((aligned(4)));
 uint32_t display_pairs_last;
 static uint8_t back;
 static uint8_t force_all[2], frozen;
+static uint8_t rowflag[2][240];            /* per buffer: rows that changed since the buffer was last converted */
 
 unsigned display_back(void) { return back; }
 void display_c2p_pair(const uint8_t *src, uint8_t *dst) { c2p_pair(src, dst); }
@@ -33,10 +34,13 @@ void display_init(void)
 
 void display_invalidate(void) { force_all[0] = force_all[1] = 1; }
 
-int display_frame(const uint8_t *fb)
+int display_frame(const uint8_t *fb, uint8_t *rowdirty)
 {
     if (frozen || plat_show_pending()) return 0;
     unsigned b = back;
+    for (unsigned y = 0; y < 240; y++) {          /* rows the renderer wrote since the last display (all rows if it does not track them) */
+        if (!rowdirty || rowdirty[y]) { rowflag[0][y] = 1; rowflag[1][y] = 1; if (rowdirty) rowdirty[y] = 0; }
+    }
     if (force_all[b]) {
         force_all[b] = 0;
         c2p_frame_all(fb, plat_buf[b]);
@@ -44,7 +48,7 @@ int display_frame(const uint8_t *fb)
         for (unsigned i = 0; i < 240 * 256 / 4; i++) s[i] = f[i];
         display_pairs_last = 240 * 16;
     } else {
-        display_pairs_last = (uint32_t)c2p_frame(fb, plat_buf[b], display_shadow[b]);
+        display_pairs_last = (uint32_t)c2p_frame(fb, plat_buf[b], display_shadow[b], rowflag[b]);
     }
     plat_show(b);
     back = (uint8_t)(b ^ 1);

@@ -8,7 +8,7 @@
 void     display_init(void);                  /* palette, buffers cleared, first buffer shown */
 /* Convert `fb` (240 rows of 256 bytes, 4-byte aligned) into the back buffer and show it from the next vertical blank.  Returns 1 if the picture
  * was converted, 0 if it was skipped because the previous one has not been displayed yet (the display is slower than the game on PAL). */
-int      display_frame(const uint8_t *fb);
+int      display_frame(const uint8_t *fb, uint8_t *rowdirty);   /* rowdirty: per-row flags set by the renderer (nes.ppu.rowdirty), cleared here; 0 = compare everything */
 void     display_freeze(void);                /* no further pictures (profile page on screen) */
 void     display_invalidate(void);            /* force a full conversion next time (after the telemetry overwrote picture lines) */
 extern uint32_t display_pairs_last;           /* 16-pixel groups converted by the last display_frame() */

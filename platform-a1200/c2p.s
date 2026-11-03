@@ -128,15 +128,25 @@ c2p_pair:
 	movem.l (%sp)+,%d2-%d4/%a3
 	rts
 
-| long c2p_frame(src, dst, shadow)
+| long c2p_frame(src, dst, shadow, rowflags)   rows whose flag byte is 0 are skipped, the flag of a processed row is cleared
 c2p_frame:
-	movem.l %d2-%d7/%a2-%a3,-(%sp)
-	move.l 36(%sp),%a0			| src
-	move.l 40(%sp),%a1			| dst
-	move.l 44(%sp),%a2			| shadow
+	movem.l %d2-%d7/%a2-%a4,-(%sp)
+	move.l 40(%sp),%a0			| src
+	move.l 44(%sp),%a1			| dst
+	move.l 48(%sp),%a2			| shadow
+	move.l 52(%sp),%a4			| row flags
 	moveq #0,%d5				| converted pairs
 	move.w #239,%d7				| rows
 .Lrow:
+	tst.b (%a4)+
+	jbne .Ldo
+	lea 256(%a0),%a0
+	lea 256(%a2),%a2
+	lea 256(%a1),%a1
+	dbra %d7,.Lrow
+	jbra .Lfin
+.Ldo:
+	clr.b -1(%a4)
 	moveq #15,%d6				| pairs per row
 .Lp:
 	move.l (%a0),%d0
@@ -158,8 +168,9 @@ c2p_frame:
 	dbra %d6,.Lp
 	lea 224(%a1),%a1			| next line: stride 256, 32 bytes advanced
 	dbra %d7,.Lrow
+.Lfin:
 	move.l %d5,%d0
-	movem.l (%sp)+,%d2-%d7/%a2-%a3
+	movem.l (%sp)+,%d2-%d7/%a2-%a4
 	rts
 .Lconv:
 	move.l (%a0),(%a2)

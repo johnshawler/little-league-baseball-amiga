@@ -16,7 +16,7 @@ void rt_nmi_check(void);
 static uint8_t nztab[16]={0,0,0,0,2,0,0,0,0x80,0,0,0,0x82,0,0,0};
 static uint32_t *wintabs[7]={tab_win0,tab_win1,tab_win2,tab_win3,tab_win4,tab_win5,tab_win6};
 
-static inline uint64_t sample_cycle_for_dots(uint64_t d){ return d<=5 ? 0 : (d-5+2)/3; }
+static inline uint64_t sample_cycle_for_dots(uint64_t d){ return d<=5 ? 0 : rt_div3(d-3); }
 #define FRAME_DOTS 89342u
 /* cycle limit for translated code (see FACTS/DESIGN): blocks whose last cycle is <= limit cannot be interrupted by an NMI or miss a frame event */
 uint64_t rt_compute_limit_at(uint64_t now){
@@ -139,7 +139,7 @@ int32_t xrt_skip_c(int32_t kind, int32_t d5){
     } else {
         uint64_t th=ppu_predict_hit(&nes); T=tvbl; if(th && th<T) T=th;
     }
-    uint64_t c0=now+4, cmin=(T<=4)?0:(T-4+2)/3;          /* first read that can see the change */
+    uint64_t c0=now+4, cmin=(T<=4)?0:rt_div3(T-2);          /* first read that can see the change */
     if(cmin<=c0) return 0;
 #ifndef AMIGA
     if(getenv("XSKIPDBG")&&now>10273000&&now<10290000) fprintf(stderr,"skip kind %d now %llu line %d cx %d T %llu tvbl %llu cmin %llu\n",(int)kind,(unsigned long long)now,p->line,p->cx,(unsigned long long)T,(unsigned long long)tvbl,(unsigned long long)cmin);

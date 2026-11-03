@@ -28,6 +28,12 @@ typedef struct {
 extern Rt rt;
 extern Apu rt_apu;           /* 2A03 APU, runtime/apu.c; advanced lazily by register accesses and apu_render*() */
 
+/* x / 3 for 64-bit x without a libgcc division (2^32 = 3*0x55555555 + 1): used by the cycle <-> dot conversions on the hot paths */
+static inline uint64_t rt_div3(uint64_t x){
+    uint32_t hi=(uint32_t)(x>>32), lo=(uint32_t)x, qh=hi/3, r=hi-qh*3;
+    uint32_t t=lo+r, ql=r*0x55555555u + (t<lo ? 0x55555555u+(t+1)/3 : t/3);
+    return ((uint64_t)qh<<32)|ql;
+}
 void rt_init(const uint8_t *prg, const uint8_t *chr);
 /* Interpreter-only execution (host verification of the lazy time model, and the slow path of the translated build). */
 void rt_run_interp(long frames);

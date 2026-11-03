@@ -10,7 +10,7 @@ Apu rt_apu;
 #define RT_AUDIO 0     /* 1: simulate the channel sequencers and queue audio events (the audio consumer must then call apu_render*() regularly) */
 #endif
 
-static inline uint64_t sample_cycle_for_dots(uint64_t d){ return d<=5 ? 0 : (d-5+2)/3; }   /* smallest k with 3k+5 >= d */
+static inline uint64_t sample_cycle_for_dots(uint64_t d){ return d<=5 ? 0 : rt_div3(d-3); }   /* smallest k with 3k+5 >= d */
 
 static void q_push(uint64_t sample, uint64_t key, uint8_t lvl){
     int i=rt.nq; if(i==8){ i=7; }
@@ -41,7 +41,7 @@ static void rt_sync(uint64_t dots){
     Ppu*p=&nes.ppu;
     while(p->dots<dots){
         if(rt_fast_ppu && p->cx==340 && p->line>=-1 && p->line<=238 && dots-p->dots>=341){
-            int m=(int)((dots-p->dots)/341); if(m>239-p->line) m=239-p->line;
+            int m=(int)((uint32_t)(dots-p->dots)/341); if(m>239-p->line) m=239-p->line;
             ppu_sync_fast(&nes,p->dots+341ull*m); continue;
         }
         if(rt_fast_ppu && p->cx==340 && p->line>=241 && dots-p->dots>=341 && ppu_skip_vbl(&nes,dots)) continue;
@@ -85,12 +85,22 @@ void    rt_io_wr(uint16_t a, uint8_t v, uint64_t c){ mem_write(a,v,c); rt.openbu
 
 static void process_dma(uint16_t read_addr){
     rt.cyc++; if(read_addr!=0x4016&&read_addr!=0x4017) (void)mem_read(read_addr,rt.cyc); rt.need_halt=0;
-    int counter=0; uint8_t rv=0, ra=0;
+    int counter=0; uint8_t rv=0, ra=0; int fast=-1;     /* fast: -1 undecided, 0 per-write path, 1 block path (see below) */
     while(rt.dma_on){
         int get=((rt.cyc&1)==0);
         rt.cyc++;
         if(get){ rv=mem_read((uint16_t)(rt.dma_page*0x100+ra),rt.cyc); ra++; counter++; }
-        else if(counter&1){ if(rt.trace_hook) rt.trace_hook('W',0x2004,rv,-1); ppu_wr(0x2004,rv,rt.cyc); counter++; if(counter==0x200) rt.dma_on=0; }
+        else if(counter&1){
+            if(fast==1){ Ppu*p=&nes.ppu; uint8_t b=rv; if((p->oamaddr&3)==2) b&=0xE3; p->oam[p->oamaddr]=b; p->oamaddr++; p->oam_dirty=1; p->openbus=rv; counter++; if(counter==0x200){ rt.dma_on=0; rt_sync(3*rt.cyc+4); } continue; }
+            if(rt.trace_hook) rt.trace_hook('W',0x2004,rv,-1);
+            ppu_wr(0x2004,rv,rt.cyc); counter++; if(counter==0x200) rt.dma_on=0;
+            if(fast<0){   /* after the first synchronised write: block mode if every remaining write stores into OAM and nothing else can observe the PPU in between:
+                           * source in RAM (no read side effects), no trace, and rendering off, or the whole rest of the transfer inside vertical blank */
+                Ppu*p=&nes.ppu; int rem=(0x200-counter)*3+6;
+                fast = (!rt.trace_hook && rt.dma_page<0x20 && !p->need_update && !p->upd_delay &&
+                        (!p->rend || (p->line>=240 && (p->line-240)*341+p->cx+rem < 21*341))) ? 1 : 0;
+            }
+        }
         else { if(read_addr!=0x4016&&read_addr!=0x4017) (void)mem_read(read_addr,rt.cyc); }
     }
 }

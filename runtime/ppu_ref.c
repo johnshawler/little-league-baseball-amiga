@@ -22,7 +22,7 @@ static void vram_write(Nes *n, uint16_t a, uint8_t v){
     if((i&3)==0){ P->pal[i&0x0F]=v; P->pal[(i&0x0F)|0x10]=v; } else P->pal[i]=v;
 }
 
-void ppu_reset(Ppu *p){ memset(p,0,sizeof *p); p->draw=1; p->line=-1; p->cx=340; p->frame=1; p->min_bg=300; p->min_sp=300; p->min_sp_std=300; }
+void ppu_reset(Ppu *p){ memset(p,0,sizeof *p); p->draw=1; p->oam_dirty=1; p->line=-1; p->cx=340; p->frame=1; p->min_bg=300; p->min_sp=300; p->min_sp_std=300; }
 
 static void inc_x(Ppu*p){ uint16_t a=p->v; if((a&0x1F)==31) a=(a&~0x1F)^0x400; else a++; p->v=a; }
 static void inc_y(Ppu*p){
@@ -127,12 +127,13 @@ static uint8_t pixel_color(Ppu*p){
     return (uint8_t)(((off+((cx-1)&7)<8)? p->tprev : p->tcur).paloff+bgc);
 }
 
+static uint32_t rowsig[240]; static uint8_t rowok[256];   /* signature of the inputs of the row now in the framebuffer (see render_line_fast) */
 static void draw_pixel(Nes *n){
     Ppu*p=P; uint8_t c; int idx;
     if(p->rend || (p->v&0x3F00)!=0x3F00){ c=pixel_color(p); idx=(c&3)?c:0; }
     else { idx=p->v&0x1F; (void)pixel_color(p); }
     uint8_t col=p->pal[idx];
-    if(p->draw) p->fb[(p->line<<8)+p->cx-1]=FBVAL(col&(p->gray?0x30:0x3F),p->emph);
+    if(p->draw){ p->fb[(p->line<<8)+p->cx-1]=FBVAL(col&(p->gray?0x30:0x3F),p->emph); p->rowdirty[p->line]=1; rowok[p->line]=0; }
 }
 
 static void process_scanline(Nes *n){
@@ -143,7 +144,7 @@ static void process_scanline(Nes *n){
         if(p->line>=0){ draw_pixel(n); p->sh_lo<<=1; p->sh_hi<<=1; sprite_eval(n); }
         else if(cx<9){
             if(cx==1){ p->vbl=0; p->nmi_level=0; }
-            if(p->oamaddr>=8 && p->rend) p->oam[cx-1]=p->oam[(p->oamaddr&0xF8)+cx-1];
+            if(p->oamaddr>=8 && p->rend){ p->oam[cx-1]=p->oam[(p->oamaddr&0xF8)+cx-1]; p->oam_dirty=1; }
         }
     } else if(cx<=320){
         if(cx==257){ p->sp_index=0; memset(p->has_sprite,0,sizeof p->has_sprite); if(p->rend_prev) p->v=(p->v&~0x041F)|(p->t&0x041F); }
@@ -228,7 +229,7 @@ void ppu_reg_write(Nes *n, uint16_t a, uint8_t v){
     case 1: set_mask(n,v); break;
     case 3: p->oamaddr=v; break;
     case 4:
-        if(p->line>=240 || !p->rend){ uint8_t b=v; if((p->oamaddr&3)==2) b&=0xE3; p->oam[p->oamaddr]=b; p->oamaddr++; }
+        if(p->line>=240 || !p->rend){ uint8_t b=v; if((p->oamaddr&3)==2) b&=0xE3; p->oam[p->oamaddr]=b; p->oamaddr++; p->oam_dirty=1; }
         else p->oamaddr+=4;
         break;
     case 5:
@@ -280,23 +281,29 @@ long ppu_fast_lines;
 static uint32_t expn[16];       /* 4 pattern bits -> 4 bytes of 0/1 (first pixel in the top byte) */
 static int expn_ready;
 static int line_hit_cx(Nes*n,int y,uint16_t vline);
+static uint8_t rc[272], rs0[272]; static int rc_large=-1;
 static void render_line_fast(Nes*n,int y,uint16_t vline){
     Ppu*p=P; ppu_fast_lines++;
     uint8_t emph=p->emph; uint8_t gm=p->gray?0x30:0x3F;
     if(!p->draw){
         /* picture not displayed: only the state effects of the line (sprite overflow, sprite-0 hit) - no pixel is computed or stored */
         if(!p->rend) return;
-        int cnt=0,s0=0,L=y-1,h=p->large?16:8;
+        int cnt=0,s0=0,L=y-1;
         if(L>=0){
-            for(int i=0;i<64;i++){ int sy=p->oam[i<<2]; if(!(L>=sy && L<sy+h)) continue; if(cnt==8) break; if(i==0) s0=1; cnt++; }
-            if(cnt==8){ int more=0; for(int i=0;i<64;i++){ int sy=p->oam[i<<2]; if(L>=sy && L<sy+h) more++; } if(more>8){
-                int sl=p->line,sc=p->cx; p->line=y-1; p->oamaddr=0; for(int cx=1;cx<=256;cx++){ p->cx=cx; sprite_eval(n); } p->line=sl; p->cx=sc; p->oamaddr=0; } }
+            if(p->oam_dirty || rc_large!=p->large){            /* per-line sprite coverage of the current OAM (rebuilt only after an OAM write / sprite size change) */
+                int h=p->large?16:8; for(int i=0;i<272;i++){ rc[i]=0; rs0[i]=0; }
+                for(int i=0;i<64;i++){ int sy=p->oam[i<<2]; for(int l=sy;l<sy+h && l<240;l++){ rc[l]++; if(i==0) rs0[l]=1; } }
+                rc_large=p->large; p->oam_dirty=0;
+            }
+            cnt=rc[L]; s0=rs0[L];
+            if(cnt>8){ int sl=p->line,sc=p->cx; p->line=y-1; p->oamaddr=0; for(int cx=1;cx<=256;cx++){ p->cx=cx; sprite_eval(n); } p->line=sl; p->cx=sc; p->oamaddr=0; }
         }
         if(s0 && !p->sp0hit && line_hit_cx(n,y,vline)) p->sp0hit=1;
         return;
     }
     __typeof__(p->fb[0])*row=&p->fb[y<<8]; const __typeof__(p->fb[0]) EM=FBVAL(0,emph);
     if(!p->rend){
+        rowok[y]=0; p->rowdirty[y]=1;
         int idx= ((p->v&0x3F00)!=0x3F00) ? 0 : (p->v&0x1F);
         __typeof__(p->fb[0]) c8=FBVAL(p->pal[idx]&gm,emph);
 #ifdef PPU_FB8
@@ -311,9 +318,8 @@ static void render_line_fast(Nes*n,int y,uint16_t vline){
     const uint8_t*ntp[4]; for(int k=0;k<4;k++) ntp[k]=p->nt+nt_off(&n->map,(uint16_t)(0x2000+k*0x400));
     const uint8_t*chrlo=n->map.chr+n->map.chr_lo, *chrhi=n->map.chr+n->map.chr_hi;
     /* background: 33 tiles -> 264 raw pixel values (0..3) in bgraw, palette-mapped colours in bgc */
-    uint8_t bgraw[272] __attribute__((aligned(4))), bgc[272] __attribute__((aligned(4)));
     uint16_t va=vline; uint16_t pb=p->bgpat; uint8_t pal0=(uint8_t)(p->pal[0]&gm);
-    uint32_t*raw32=(uint32_t*)bgraw; uint32_t*c32=(uint32_t*)bgc;
+    uint8_t tlo[34],thi[34],tpb[34]; uint32_t sig=0x811C9DC5u;
     for(int j=0;j<33;j++){
         const uint8_t*nt=ntp[(va>>10)&3];
         uint8_t ti=nt[va&0x3FF];
@@ -322,16 +328,38 @@ static void render_line_fast(Nes*n,int y,uint16_t vline){
         uint8_t pbase=(uint8_t)(((at>>sh)&3)<<2);
         uint16_t ta=(uint16_t)((ti<<4)|(va>>12)|pb);
         const uint8_t*cp=(ta<0x1000?chrlo:chrhi)+(ta&0xFFF);
-        uint8_t lo=cp[0], hi=cp[8];
+        tlo[j]=cp[0]; thi[j]=cp[8]; tpb[j]=pbase;
+        uint32_t w=tlo[j]|((uint32_t)thi[j]<<8)|((uint32_t)pbase<<16);
+        sig=((sig<<5)|(sig>>27))^w; sig*=0x01000193u;
+        if((va&0x1F)==31) va=(uint16_t)((va&~0x1F)^0x400); else va++;
+    }
+    int fx=p->fx;
+    FSpr sp[8]; int s0,ovf; int cnt=eval_sprites_fast(n,y,sp,&s0,&ovf);
+    if(ovf){ int sl=p->line,sc=p->cx; p->line=y-1; p->oamaddr=0; for(int cx=1;cx<=256;cx++){ p->cx=cx; sprite_eval(n); } p->line=sl; p->cx=sc; p->oamaddr=0; }
+    for(int i=0;i<cnt;i++){ uint32_t w=sp[i].lo|((uint32_t)sp[i].hi<<8)|((uint32_t)sp[i].x<<16); sig=((sig<<5)|(sig>>27))^w; sig*=0x01000193u;
+        w=sp[i].paloff|((uint32_t)sp[i].bgprio<<8)|((uint32_t)sp[i].hflip<<9); sig=((sig<<5)|(sig>>27))^w; sig*=0x01000193u; }
+    { const uint32_t*pl=(const uint32_t*)p->pal; for(int i=0;i<8;i++){ sig=((sig<<5)|(sig>>27))^pl[i]; sig*=0x01000193u; } }
+    { uint32_t w=(uint32_t)fx|((uint32_t)p->min_bg<<3)|((uint32_t)(p->min_sp&0x1FF)<<12)|((uint32_t)gm<<21)|((uint32_t)emph<<27)|((uint32_t)p->sp_en<<30)|((uint32_t)p->bg_en<<31); sig=((sig<<5)|(sig>>27))^w; sig*=0x01000193u; sig^=cnt; }
+#ifdef NOSIG
+    if(0){
+#else
+    if(rowok[y] && rowsig[y]==sig){
+#endif      /* identical inputs: the row in the framebuffer is already right (only the sprite-0 hit has to be computed) */
+        if(s0 && !p->sp0hit && line_hit_cx(n,y,vline)) p->sp0hit=1;
+        return;
+    }
+    rowsig[y]=sig; rowok[y]=1; p->rowdirty[y]=1;
+    uint8_t bgraw[272] __attribute__((aligned(4))), bgc[272] __attribute__((aligned(4)));
+    uint32_t*raw32=(uint32_t*)bgraw; uint32_t*c32=(uint32_t*)bgc;
+    for(int j=0;j<33;j++){
+        uint8_t lo=tlo[j], hi=thi[j], pbase=tpb[j];
         uint32_t r0=expn[lo>>4]|(expn[hi>>4]<<1), r1=expn[lo&15]|(expn[hi&15]<<1);
         raw32[2*j]=r0; raw32[2*j+1]=r1;
         uint8_t m1=(uint8_t)(p->pal[pbase+1]&gm), m2=(uint8_t)(p->pal[pbase+2]&gm), m3=(uint8_t)(p->pal[pbase+3]&gm);
         for(int h=0;h<2;h++){ uint32_t r=h?r1:r0; uint32_t o=0;
             for(int k=0;k<4;k++){ unsigned v=(r>>(24-8*k))&3; o=(o<<8)|(v==0?pal0:v==1?m1:v==2?m2:m3); }
             c32[2*j+h]=o; }
-        if((va&0x1F)==31) va=(uint16_t)((va&~0x1F)^0x400); else va++;
     }
-    int fx=p->fx;
     /* left-edge clipping of the background: pixel x is visible iff x+1 > min_bg */
     int mb=p->min_bg; int clipn= mb>256?256:mb;
     if(!p->bg_en) clipn=256;
@@ -346,8 +374,6 @@ static void render_line_fast(Nes*n,int y,uint16_t vline){
     for(int x=0;x<clipn;x++){ d[x]=(__typeof__(d[0]))(pal0|EM); }
     uint8_t*rawb=bgraw+fx; (void)rawb;
     /* sprites */
-    FSpr sp[8]; int s0,ovf; int cnt=eval_sprites_fast(n,y,sp,&s0,&ovf);
-    if(ovf){ int sl=p->line,sc=p->cx; p->line=y-1; p->oamaddr=0; for(int cx=1;cx<=256;cx++){ p->cx=cx; sprite_eval(n); } p->line=sl; p->cx=sc; p->oamaddr=0; }
     if(cnt){
         uint8_t claim[256]; for(int x=0;x<256;x+=4) *(uint32_t*)&claim[x]=0;
         for(int i=0;i<cnt;i++){
@@ -380,7 +406,7 @@ void ppu_sync_fast(Nes *n, uint64_t dots){
     Ppu*p=P;
     while(p->dots<dots){
         if(p->cx==340 && p->line>=-1 && p->line<=238 && p->rend==p->rend_prev && !p->need_update && !p->upd_delay){
-            int m=(int)((dots-p->dots)/341); if(m>239-p->line) m=239-p->line;
+            int m=(int)((uint32_t)(dots-p->dots)/341); if(m>239-p->line) m=239-p->line;
             if(m>=1){
                 int y0=p->line+1; uint16_t vl=p->v, vlast;
                 if(p->rend){ dec_x(p); dec_x(p); vl=p->v; }          /* v at the output start of line y0 */
@@ -402,7 +428,7 @@ void ppu_sync_fast(Nes *n, uint64_t dots){
 uint64_t ppu_skip_vbl(Nes*n, uint64_t dots){
     Ppu*p=P;
     if(p->cx!=340||p->line<241||p->line>259||p->rend!=p->rend_prev||p->need_update||p->upd_delay||dots<=p->dots) return 0;
-    int m=(int)((dots-p->dots)/341); if(m>260-p->line) m=260-p->line;
+    int m=(int)((uint32_t)(dots-p->dots)/341); if(m>260-p->line) m=260-p->line;
     if(m<1) return 0;
     p->dots+=341ull*m; p->line+=m; return 341ull*m;
 }

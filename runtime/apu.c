@@ -269,22 +269,27 @@ int apu_pop_event(Apu *a, uint64_t until, uint32_t *t, int *ch, int *lvl){
     return 1;
 }
 
+/* Event merge with the next event time of every queue cached in a register-sized array (was: 4 queue head reads and compares per event and per sample).
+ * Output is bit-identical to the previous implementation (same integration, same order of equal-time events: lowest channel index first). */
+#define NOEV 0x7FFFFFFF
 static void render(Apu *a, uint64_t from, uint64_t to, void *out, unsigned n, int s8){
     static const uint32_t caps[4]={APU_Q_SQ,APU_Q_SQ,APU_Q_TRI,APU_Q_NOI};
     const ApuEvent *qs[4]; uint64_t span=to-from, rec[2]; uint32_t q, r, acc=0, base=(uint32_t)from, pos=0, i;
-    unsigned lvl[4], mix; int c;
+    unsigned lvl[4], mix; int c; int32_t nt[4]; uint32_t hd[4], tl[4];
     if(!n || to<=from) return;
     apu_flush(a,to);
     qs[0]=a->qsq0; qs[1]=a->qsq1; qs[2]=a->qtri; qs[3]=a->qnoi;
     q=(uint32_t)(span/n); r=(uint32_t)(span%n);
     if(!q) return;
     rec[0]=(0x100000000ull+q-1)/q; rec[1]=(0x100000000ull+q)/(q+1);
-    for(c=0;c<4;c++) lvl[c]=a->rlvl[c];
+    for(c=0;c<4;c++){ lvl[c]=a->rlvl[c]; hd[c]=a->qh[c]; tl[c]=a->qt[c]; nt[c]= hd[c]!=tl[c] ? (int32_t)(qs[c][hd[c]&(caps[c]-1)].t-base) : NOEV; }
+#define NEXT_BEST(best,bo) do{ best=0; bo=nt[0]; if(nt[1]<bo){best=1;bo=nt[1];} if(nt[2]<bo){best=2;bo=nt[2];} if(nt[3]<bo){best=3;bo=nt[3];} }while(0)
+#define CONSUME(best) do{ const ApuEvent *e_=&qs[best][hd[best]&(caps[best]-1)]; lvl[best]=e_->lvl; hd[best]++; \
+        nt[best]= hd[best]!=tl[best] ? (int32_t)(qs[best][hd[best]&(caps[best]-1)].t-base) : NOEV; }while(0)
     for(;;){                                      /* events before `from` that were never rendered: apply */
-        int best=-1; int32_t bo=0;
-        for(c=0;c<4;c++) if(a->qh[c]!=a->qt[c]){ int32_t o=(int32_t)(qs[c][a->qh[c]&(caps[c]-1)].t-base); if(best<0||o<bo){best=c;bo=o;} }
-        if(best<0||bo>=0) break;
-        lvl[best]=qs[best][a->qh[best]&(caps[best]-1)].lvl; a->qh[best]++;
+        int best; int32_t bo; NEXT_BEST(best,bo);
+        if(bo>=0) break;                          /* also covers "no event" (NOEV) */
+        CONSUME(best);
     }
     mix=apu_mix(lvl[0],lvl[1],lvl[2],lvl[3]);
     for(i=0;i<n;i++){
@@ -292,18 +297,17 @@ static void render(Apu *a, uint64_t from, uint64_t to, void *out, unsigned n, in
         acc+=r; if(acc>=n){ acc-=n; len++; idx=1; }
         end=pos+len;
         for(;;){
-            int best=-1; int32_t bo=0;
-            for(c=0;c<4;c++) if(a->qh[c]!=a->qt[c]){ int32_t o=(int32_t)(qs[c][a->qh[c]&(caps[c]-1)].t-base); if(best<0||o<bo){best=c;bo=o;} }
-            if(best<0 || (uint32_t)bo>=end) break;
+            int best; int32_t bo; NEXT_BEST(best,bo);
+            if((uint32_t)bo>=end) break;
             sum+=mix*((uint32_t)bo-cur); cur=(uint32_t)bo;
-            lvl[best]=qs[best][a->qh[best]&(caps[best]-1)].lvl; a->qh[best]++;
+            CONSUME(best);
             mix=apu_mix(lvl[0],lvl[1],lvl[2],lvl[3]);
         }
         sum+=mix*(end-cur); pos=end;
         m=(uint32_t)(((uint64_t)sum*rec[idx])>>32);
         if(s8) ((int8_t*)out)[i]=(int8_t)(((m*83u)>>10)-128u); else ((int16_t*)out)[i]=(int16_t)m;
     }
-    for(c=0;c<4;c++) a->rlvl[c]=(uint8_t)lvl[c];
+    for(c=0;c<4;c++){ a->rlvl[c]=(uint8_t)lvl[c]; a->qh[c]=hd[c]; }
     a->rpos=to;
 }
 void apu_render16(Apu *a, uint64_t from, uint64_t to, int16_t *out, unsigned n){ render(a,from,to,out,n,0); }
