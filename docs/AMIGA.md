@@ -302,3 +302,30 @@ With 16-bit fetch the same display costs 1.65x more (1.23 %). So DMA contention 
 
 Cycle-exact timing: `accuracy = 2` and `uae_cpu_cycle_exact = 1 / uae_cpu_memory_cycle_exact = 1` were tried (same scene, 700 s of wall time): the emulation is so much slower than real time on this host that not even the first frame
 of the scene was completed, so no number could be obtained. The default setting above is what all numbers in this document use; if a real stock A1200 has slower chip-RAM access than FS-UAE models, the real speed is lower.
+
+## 14. Round 3, step 2: 5 bitplanes (PPU_FB5)
+
+* **What it is.** `-DPPU_FB5` (default of `tools/build_adf.sh`; `FBFLAG=-DPPU_FB8` gives the old 8-plane build): the framebuffer holds the *palette RAM index* 0..31 of every pixel (background: attribute palette x 4 + pixel,
+  0 for pixel value 0; sprites 16 + palette x 4 + pixel; forced blank: the `$3Fxx` index the address points at). The display has **5 interleaved planes** (`PLAT_STRIDE` 160, buffers 38,400 bytes), c2p writes 5 planes
+  (`c2p.s` assembled with `P5`), and the 32 colour registers are loaded from a snapshot of the PPU palette RAM when a picture is shown: `nes_rgb[(pal[i] & (gray ? 0x30 : 0x3F)) | red emphasis << 6 | green emphasis << 7]`,
+  by the vertical-blank interrupt that flips the buffer (`plat_set_palette32`, nothing is written if the colours did not change). The 16-bit and 8-bit framebuffer builds are unchanged.
+* **Palette changes during a frame** (palette RAM written with another value, or gray/emphasis bits changed, while the PPU is on a visible line; `nes.ppu.palvar`), measured with the reference runtime over 6000 frames of the play script and of coverage scripts:
+  play (p8) 6 frames (42, 1324, 2451, 3018, 4082, 5195), cov2 6, cov6 6, cov1 8, cov3 2, cov4 4, cov5 1, cov7 3, cov8 1 - **0.02 to 0.13 % of the frames** (screen transitions; 23 to 37 lines of such a frame are drawn with another palette).
+  The 5-plane build **does not show such a frame** (the previous picture stays), counted in `disp_skip`. Everything else is exact.
+* **Proof.** Host: the PPU_FB5 build with the palette applied at the frame hook is compared with the 16-bit reference build for all 6000 frames: the differing frames are exactly the `palvar` frames (p8: 6 of 6000, cov2 6, cov6 6). Amiga: `run_tests.sh` scenes (frames 100, 300, 400, 1200, 1600, 3000, 5000, PAL and NTSC,
+  5 planes): **14 of 14 pixel-exact** against the reference frames after palette application.
+* The edit of the PPU files (owned by the PPU agent) is minimal: `FBVAL` for FB5 in `nes.h`, the `CV` / `PIXV` macros and the `PALVAR` hook in `ppu_ref.c`.
+
+## 15. Round 3, step 3: speed table (real A1200 timing, default FS-UAE timing)
+
+Builds are made from a clean checkout (the working tree is shared with other agents). "FB8" = 8 planes, "FB5" = 5 planes, both with the PPU of commit 230437e (closed-form model between register accesses) and the same snapshots.
+
+| scene | round 2 (FB8, old PPU) | now FB8 | **now FB5** | gain FB5/FB8 |
+|---|---|---|---|---|
+| menu (100) | 3.3 % | 3.2 % | **3.9 %** (212 frames / 5500 ticks, 466 ms/frame) | +20 % |
+| line-up (1200) | 1.4 % | 2.95 % | **3.6 %** (198 frames, 500 ms/frame) | +22 % |
+| field (2000) | 2.0 % | 2.0 % | **2.8 %** (153 frames, 590 ms/frame) | +37 % |
+
+ms per NES frame, FB5, current tree (menu / line-up / field): translated code 3.3 / 7.2 / 19.7, `rt_x.s` 2.7 / 5.7 / 13.5, `rt_x.c` 10.1 / 19.5 / 46.3, `rt_core` 24.6 / 31.7 / 41.2, `ppu_ref` 352 / 363 / 425,
+`cpu6502`+mapper 2.5 / 4.2 / 13.3, APU 34.6 / 27.2 / 22.3, c2p + display 0.5 / 2.3 / 15.8, main/audio/platform 1.2 / 1.4 / 1.2.
+Largest remaining costs: `ppu_ref` (72-81 %: still the line renderer and the sprite/tile work on drawn frames plus the state-only lines), then `rt_x.c` + `rt_x.s` + translated code in the field scene (80 ms), APU (22-35 ms), c2p (16 ms in the field scene).

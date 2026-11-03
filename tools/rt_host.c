@@ -46,7 +46,7 @@ int main(int argc,char**argv){
     if(getenv("OAMDUMP")) oamdump=atol(getenv("OAMDUMP"));
     if(getenv("DRAWPAT")) drawpat=atol(getenv("DRAWPAT"));
     if(getenv("PCMOUT")){ pcmf=fopen(getenv("PCMOUT"),"wb"); const char*s=getenv("PCMSTD"); int pal=!s||s[0]=='p'; aw_init(&aw,pal?11803:11912,pal?21423809u:7815439u,39375000u,124); }
-    extern int rt_fast_ppu; if(getenv("RT_NOFAST")||getenv("PPU_REF")) rt_fast_ppu=0;
+    extern int rt_fast_ppu, rt_lazy; if(getenv("RT_LAZY")) rt_lazy=1; if(getenv("RT_NOFAST")||getenv("PPU_REF")) rt_fast_ppu=0;
     extern int rt_ppu_check; extern long rt_chk_n; if(getenv("PPU_CHECK")) rt_ppu_check=1;   /* PPU_CHECK=1: compare the fast PPU model with the per-dot model at every access and frame end */
     rt_init(d+16,d+16+131072); rt.input_hook=input; rt.frame_hook=frame; if(trc||cmpf) rt.trace_hook=trace;
 #ifdef XRT
@@ -54,5 +54,5 @@ int main(int argc,char**argv){
 #else
     rt_run_interp(nf);
 #endif
-     if(cmpf) fprintf(stderr,"IDENTICAL to the reference trace over %ld records\n",cmpn); { extern long ppu_fast_lines, ppu_exotic; if(rt_ppu_check) fprintf(stderr,"PPU_CHECK: %ld comparisons passed, %ld exotic situations\n",rt_chk_n,ppu_exotic); fprintf(stderr,"frames with a palette/emphasis change during visible lines: %ld\n",palvar_frames); fprintf(stderr,"fast lines %ld\n",ppu_fast_lines); } fprintf(stderr,"done: %ld frames, %llu cycles\n",rt.frames_done,(unsigned long long)rt.cyc); return 0;
+     if(cmpf) fprintf(stderr,"IDENTICAL to the reference trace over %ld records\n",cmpn); { extern long ppu_fast_lines, ppu_exotic, ppu_st[16]; if(getenv("PPU_STATS")) fprintf(stderr,"ppu stats: fast lines %ld, bg rebuilt %ld, rows rewritten %ld (with sprites %ld), ctx %ld\n",ppu_st[0],ppu_st[1],ppu_st[2],ppu_st[3],ppu_st[4]); if(rt_ppu_check) fprintf(stderr,"PPU_CHECK: %ld comparisons passed, %ld exotic situations\n",rt_chk_n,ppu_exotic); fprintf(stderr,"frames with a palette/emphasis change during visible lines: %ld\n",palvar_frames); fprintf(stderr,"fast lines %ld\n",ppu_fast_lines); } fprintf(stderr,"done: %ld frames, %llu cycles\n",rt.frames_done,(unsigned long long)rt.cyc); return 0;
 }
