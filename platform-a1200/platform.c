@@ -66,13 +66,33 @@
 
 /* AGA display programming (values proven in FS-UAE by the previous A1200 port): 32-bit bitplane fetch (FMODE 1) halves the DMA slots the
  * 8 planes take away from the CPU; DDFSTRT/STOP 0x40/0xB0 place a 256 pixel picture at DIWSTRT 0xA1. */
+#ifndef PLAT_PLANES
+#define PLAT_PLANES 8            /* bitplanes fetched (8 = 256 colours); fewer/0 only for the DMA contention measurements */
+#endif
+#ifndef PLAT_FMODE
+#define PLAT_FMODE 1
+#endif
+#if PLAT_PLANES == 8
 #define BPLCON0_8PL  0x0211       /* BPU3 (bit 4) = 8 planes with BPU2..0 = 0, COLOR (bit 9), lores, ECSENA (bit 0: enables BRDRBLNK in BPLCON3) */
+#else
+#define BPLCON0_8PL  (0x0201 | (PLAT_PLANES << 12))
+#endif
 #define BPLCON3_BASE 0x0C20       /* BANK 0, PF2OF default (011), LOCT 0, SPRES lores, BRDRBLNK (border blanked: always black) */
 #define BPLCON3_LOCT 0x0200
 #define BPLCON4_BASE 0x0011       /* default: no bitplane XOR, sprite colour banks 1 (unused, sprites are off) */
+#if PLAT_FMODE == 0
+#define FMODE_VAL 0x0000
+#define DDF_STRT 0x0048
+#define DDF_STOP 0x00C0
+#elif PLAT_FMODE == 1
 #define FMODE_VAL    0x0001
 #define DDF_STRT     0x0040
 #define DDF_STOP     0x00B0
+#else
+#define FMODE_VAL 0x0003
+#define DDF_STRT 0x0038
+#define DDF_STOP 0x00B8
+#endif
 
 /* DMACON / INTENA bits */
 #define SETBIT   0x8000
@@ -287,6 +307,13 @@ void plat_set_color(unsigned idx, uint16_t rgb)    /* immediate, bank 0 only (er
     R16(COLOR00 + 2 * (idx & 31)) = rgb & 0x0FFF;
 }
 
+/* measurement builds (PLAT_PLANES < 8): switch the full 8-plane display on so that the telemetry page can be read from a screenshot */
+void plat_display_full(void)
+{
+    R16(BPLCON0) = 0x0211;
+    R16(DMACON) = SETBIT | DMAEN | BPLEN;
+}
+
 /* -------------------------------------------------------------------- input */
 uint16_t plat_joy_bits(unsigned port)
 {
@@ -359,7 +386,11 @@ void plat_init(void)
     CIAA(C_ICR) = 0x88;
 #endif
     R16(INTREQ) = DMA_ALL;
+#if PLAT_PLANES == 0
+    R16(DMACON) = SETBIT | DMAEN | COPEN | BLTEN;       /* measurement: no bitplane DMA at all */
+#else
     R16(DMACON) = SETBIT | DMAEN | BPLEN | COPEN | BLTEN;
+#endif
     R16(INTENA) = SETBIT | INT_INTEN | INT_EXTER | INT_VERTB | INT_PORTS;
     __asm__ volatile("move.w #0x2000,%%sr" : : : "memory");
 }

@@ -72,6 +72,7 @@ int  plat_show_pending(void);               /* a plat_show() has not been applie
 void plat_set_palette256(const uint32_t rgb[256]);   /* 0x00RRGGBB, loaded by the next vertical blank */
 void plat_set_color(unsigned idx, uint16_t rgb);     /* RGB444, colour register idx (< 32), immediate (error screens) */
 void plat_wait_vbl(void);
+void plat_display_full(void);               /* 8 planes + bitplane DMA on (measurement builds with fewer planes, before the profile page is drawn) */
 
 /* --------------------------------------------------------------------- time */
 void plat_wait_ticks(uint32_t t);           /* wait (STOP) until plat_tick_count >= t */

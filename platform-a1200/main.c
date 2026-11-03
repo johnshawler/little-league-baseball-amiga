@@ -128,7 +128,7 @@ static void on_frame(long f)
 #ifdef PROFILE
     {
         static uint8_t done;
-        if (plat_tick_count >= PHI + 60 && !done) { done = 1; display_freeze(); telem_prof_report(plat_buf[display_back() ^ 1]); plat_show(display_back() ^ 1); }
+        if (plat_tick_count >= PHI + 60 && !done) { done = 1; display_freeze(); plat_display_full(); telem_prof_report(plat_buf[display_back() ^ 1]); plat_show(display_back() ^ 1); }
     }
 #endif
 }
