@@ -14,13 +14,14 @@ cfg="$here/.run_$$.fs-uae"
 : "${KICK:?set KICK=/path/to/kickstart.rom (test only - never part of the deliverables)}"
 ADF=${ADF:?set ADF=/path/to/llb.adf}
 sed -e "s|@KICK@|$KICK|" -e "s|@ADF@|$ADF|" -e "s|^\[end\]|screenshots_output_dir = $tmp\n[end]|" "$here/$std.fs-uae" > "$cfg"
+[ -n "$AUDIO_RATE" ] && sed -i "s|^\\[end\\]|audio_frequency = $AUDIO_RATE\\n[end]|" "$cfg"
 [ -n "$FAST" ] && sed -i 's|^\[end\]|accuracy = 0\nuae_cpu_speed = max\nuae_cpu_compatible = false\n[end]|' "$cfg"   # FAST=1: functional tests, the emulated CPU runs as fast as the host allows (not real A1200 speed)
 cd "$here"
 if [ -n "$AUDIO_OUT" ]; then   # record the emulated Paula output through OpenAL-soft's wave backend
   cat > "$tmp/alsoft.conf" <<EOT
 [general]
 drivers=wave
-frequency=44100
+frequency=${AUDIO_RATE:-44100}
 channels=stereo
 sample-type=int16
 [wave]

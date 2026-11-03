@@ -64,10 +64,12 @@ static uint64_t a_from;
 
 static inline uint32_t e_since(uint16_t t0) { return (uint16_t)(t0 - plat_eclock()); }
 
+static long f0;                        /* frame index at start (non-zero when starting from a snapshot) */
+
 static void on_frame(long f)
 {
     uint16_t t0;
-    uint32_t deadline = game_base + (uint32_t)f + 1;
+    uint32_t deadline = game_base + (uint32_t)(f - f0) + 1;
     int32_t lag = (int32_t)(plat_tick_count - deadline);
 
     /* 1. pace to the game clock; when late, run on (catch-up) up to BACKLOG_MAX ticks, then drop the lag */
@@ -117,11 +119,55 @@ static void on_frame(long f)
 #endif
 }
 
+#ifdef SNAPSHOT      /* test builds: start from a runtime state captured by tools/snap.c instead of the reset state */
+extern const uint8_t snap_data[];
+static uint8_t snap_load(void)
+{
+    const uint32_t *h = (const uint32_t *)snap_data;
+    if (h[0] != 0x534E5031u || h[1] != sizeof nes || h[2] != sizeof rt || h[3] != sizeof rt_apu) for (;;) plat_set_color(0, 0x0F0F);   /* layout mismatch: magenta */
+    const uint8_t *p = snap_data + 20;
+    const uint8_t *prg = nes.map.prg, *chr = nes.map.chr;
+    void (*fh)(long) = rt.frame_hook; uint8_t (*ih)(int, long) = rt.input_hook;
+    memcpy(&nes, p, sizeof nes); p += sizeof nes;
+    nes.map.prg = prg; nes.map.chr = chr;
+    memcpy(&rt, p, sizeof rt); p += sizeof rt;
+    rt.frame_hook = fh; rt.input_hook = ih; rt.trace_hook = 0; rt.ram = nes.ram;
+    memcpy(&rt_apu, p, sizeof rt_apu); p += sizeof rt_apu;
+    a_from = ((uint64_t)((const uint32_t *)p)[0] << 32) | ((const uint32_t *)p)[1];
+    f0 = rt.frames_done;
+    return 1;
+}
+#endif
 #ifdef TELEM
 static void stage(uint32_t n) { uint32_t w[2] = { TELEM_MAGIC, 0x80000000u | n }; telem_draw(plat_buf[0], w, 2, 224); }
 #else
 #define stage(n) ((void)0)
 #endif
+#ifdef AUDIO_TEST      /* audio chain test: replay the PCM chunks of a host run (tools/rt_host.c PCMOUT) through audio.c at the game clock, no emulation */
+extern const uint8_t audio_test_pcm[], audio_test_pcm_end[];
+void main(void)
+{
+    display_init();
+    audio_init();
+    uint32_t base = plat_tick_count + 30;      /* half a second of silence first */
+    plat_wait_ticks(base);
+    for (const uint8_t *p = audio_test_pcm; p < audio_test_pcm_end; ) {
+        unsigned w = (p[0] << 8) | p[1];
+        int8_t *buf;
+        plat_wait_ticks(++base);
+        while (!(buf = audio_alloc())) plat_wait_ticks(plat_tick_count + 1);
+        for (unsigned i = 0; i < 2 * w; i++) buf[i] = (int8_t)p[2 + i];
+        audio_commit(w);
+        p += 2 + 2 * w;
+    }
+#ifdef TELEM
+    {   uint32_t u_end = audio_underruns;      /* underruns during the replay (the 3 chunks still queued cannot have caused any) */
+        plat_wait_ticks(base + 60);
+        uint32_t w[16] = { TELEM_MAGIC, plat_tick_count, 0, plat_vbl_count, u_end, audio_chunks_played, 0 }; telem_draw(plat_buf[0], w, 16, 224); }
+#endif
+    for (;;) __asm__ volatile("stop #0x2000");
+}
+#else
 void main(void)
 {
     display_init();
@@ -135,7 +181,11 @@ void main(void)
     rt.input_hook = input;
     rt.frame_hook = on_frame;
     a_from = 0;
+#ifdef SNAPSHOT
+    snap_load();
+#endif
     game_base = plat_tick_count;
     xrt_run(0x7FFFFFFF);
     for (;;) { }
 }
+#endif

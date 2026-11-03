@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../runtime/rt.h"
+#include "../runtime/audio_words.h"
 #pragma pack(push,1)
 typedef struct { char t; uint8_t v; uint16_t a; int32_t abs; uint32_t cyc; uint32_t fr; } TRec;
 #pragma pack(pop)
@@ -22,12 +23,18 @@ static uint8_t input(int port, long frame){
     uint8_t b=0; if(m&0x100) b|=1; if(m&1) b|=2; if(m&4) b|=4; if(m&8) b|=8; if(m&0x10) b|=16; if(m&0x20) b|=32; if(m&0x40) b|=64; if(m&0x80) b|=128; return b;
 }
 static long fbsel[64]; static int nfbsel;     /* FBFRAMES=a,b,c : dump only these frames (hook index) */
-static void frame(long f){ if(fbf){ if(nfbsel){ int ok=0; for(int i=0;i<nfbsel;i++) if(fbsel[i]==f) ok=1; if(!ok) return; } static uint8_t buf[240*256*2]; for(int i=0;i<240*256;i++){ buf[2*i]=(uint8_t)nes.ppu.fb[i]; buf[2*i+1]=(uint8_t)(nes.ppu.fb[i]>>8); }
+static FILE *pcmf; static AudioWords aw; static uint64_t a_from;   /* PCMOUT=file PCMSTD=pal|ntsc: per frame the PCM chunk the Amiga build produces: u16 words, then 2*words signed bytes */
+static void pcm_frame(void){
+    static int8_t buf[1024]; unsigned w=aw_next(&aw); uint64_t to=nes.ppu.dots/3-2; apu_render8(&rt_apu,a_from,to,buf,2*w); a_from=to;
+    fputc(w>>8,pcmf); fputc(w,pcmf); fwrite(buf,1,2*w,pcmf);
+}
+static void frame(long f){ if(pcmf) pcm_frame(); if(fbf){ if(nfbsel){ int ok=0; for(int i=0;i<nfbsel;i++) if(fbsel[i]==f) ok=1; if(!ok) return; } static uint8_t buf[240*256*2]; for(int i=0;i<240*256;i++){ buf[2*i]=(uint8_t)nes.ppu.fb[i]; buf[2*i+1]=(uint8_t)(nes.ppu.fb[i]>>8); }
     uint8_t h[8]; for(int i=0;i<8;i++) h[i]=(uint8_t)((uint64_t)f>>(8*i)); fwrite(h,1,8,fbf); fwrite(buf,1,sizeof buf,fbf); } }
 int main(int argc,char**argv){
     FILE*f=fopen(argv[1],"rb"); fseek(f,0,SEEK_END); long sz=ftell(f); rewind(f); uint8_t*d=malloc(sz); if(fread(d,1,sz,f)!=(size_t)sz) return 1; fclose(f);
     long nf=atol(argv[2]); FILE*sc=fopen(argv[3],"r"); while(sc&&fscanf(sc,"%ld %x",&sf[ns],&sm[ns])==2) ns++;
     if(argc>4 && strcmp(argv[4],"-")) trc=fopen(argv[4],"wb"); nox=getenv("CMP_NOX")!=0; no2002=getenv("CMP_NO2002")!=0; if(getenv("TRACECMP")) cmpf=fopen(getenv("TRACECMP"),"rb"); if(getenv("FBDUMP")) fbf=fopen(getenv("FBDUMP"),"wb"); if(getenv("FBFRAMES")){ char*p=getenv("FBFRAMES"); while(*p&&nfbsel<64){ fbsel[nfbsel++]=strtol(p,&p,10); if(*p==',') p++; } }
+    if(getenv("PCMOUT")){ pcmf=fopen(getenv("PCMOUT"),"wb"); const char*s=getenv("PCMSTD"); int pal=!s||s[0]=='p'; aw_init(&aw,pal?11803:11912,pal?21423809u:7815439u,39375000u,124); }
     extern int rt_fast_ppu; if(getenv("RT_NOFAST")) rt_fast_ppu=0;
     rt_init(d+16,d+16+131072); rt.input_hook=input; rt.frame_hook=frame; if(trc||cmpf) rt.trace_hook=trace;
 #ifdef XRT

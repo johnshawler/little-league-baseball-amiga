@@ -1,7 +1,7 @@
 /* telem.c - test instrumentation (see telem.h). */
 #include "platform.h"
 #include "telem.h"
-#ifdef PCTRACE
+#if defined(PCTRACE) || defined(PROFILE)
 #include "../runtime/rt.h"
 #endif
 
@@ -34,7 +34,7 @@ void plat_prof_pc(uint32_t pc)
 extern char _pr0[], _pr1[], _pr2[], _pr3[], _pr4[], _pr5[], _pr6[], _pr7[], _pr8[], _pr10[], _idle0[], _idle1[];
 #define PLIM 0x80000
 static uint16_t prof[PLIM >> PSH];
-uint32_t prof_total, prof_other;
+uint32_t prof_total, prof_other, prof_f0, prof_f1;
 extern volatile uint32_t plat_tick_count;
 #ifndef PLO
 #define PLO 600
@@ -43,6 +43,8 @@ extern volatile uint32_t plat_tick_count;
 void plat_prof_pc(uint32_t pc)
 {
     if (plat_tick_count < PLO || plat_tick_count >= PHI) return;
+    if (!prof_total) prof_f0 = (uint32_t)rt.frames_done;
+    prof_f1 = (uint32_t)rt.frames_done;
     prof_total++;
     if (pc >= 0x800 && pc < PLIM) { uint16_t *c = &prof[pc >> PSH]; if (*c < 65535) ++*c; } else prof_other++;
 }
@@ -60,6 +62,7 @@ void telem_prof_report(uint8_t *buf)
         }
         w[3 + c] = sum;
     }
+    w[14] = prof_f0; w[15] = prof_f1;
     /* top bins */
     for (unsigned r = 0; r < 44; r++) {
         unsigned best = 0, bi = 0;

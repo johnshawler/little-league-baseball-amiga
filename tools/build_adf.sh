@@ -2,6 +2,10 @@
 # Build the bootable A1200 disk image:  tools/build_adf.sh <rom.nes> <out.adf>
 #   EXTRA="-DTELEM"            speed telemetry in the bottom picture lines (test builds)
 #   EXTRA="-DPROFILE"          PC-sampling profile page (test builds)
+#   TESTINPUT=script.txt       controller driven by a frame script ("frame hexmask" lines, libretro bits as tools/rt_host.c)
+#   EXTRA="-DSTOP_AT=N"        show the picture of frame N (hook index) and stop (pixel comparison tests)
+#   AUDIO_TEST=file.pcm        replay a PCM file through the audio module (no emulation)
+#   SNAPSHOT=file.snap         start from a runtime snapshot made by tools/snap.c (test builds)
 #   BUILD=name                 build directory build/<name> (default amiga)
 # The ROM (iNES, mapper 1, 128 KB PRG + 128 KB CHR) is only read; it is copied into the disk image, never into the repository.
 set -e
@@ -28,6 +32,16 @@ for l in open(sys.argv[1]):
 " "$TESTINPUT" > $B/testinput.inc
   EXTRA="$EXTRA -DTESTINPUT"; CFLAGS="$CFLAGS -DTESTINPUT"; RTFLAGS="$RTFLAGS -DTESTINPUT"
 fi
+SNAPOBJ=""
+if [ -n "$SNAPSHOT" ]; then    # test builds: start from a runtime snapshot (tools/snap.c)
+  printf '\t.section .rodata\n\t.even\n\t.globl snap_data\nsnap_data:\n\t.incbin "%s"\n' "$SNAPSHOT" > $B/snap.s
+  $AS $B/snap.s -o $B/snap.o; SNAPOBJ=$B/snap.o
+  CFLAGS="$CFLAGS -DSNAPSHOT"; RTFLAGS="$RTFLAGS -DSNAPSHOT"
+fi
+if [ -n "$AUDIO_TEST" ]; then  # test build: replay a PCM file (tools/rt_host.c PCMOUT) through the audio module
+  printf '\t.section .rodata\n\t.even\n\t.globl audio_test_pcm, audio_test_pcm_end\naudio_test_pcm:\n\t.incbin "%s"\naudio_test_pcm_end:\n' "$AUDIO_TEST" > $B/atest.s
+  $AS $B/atest.s -o $B/atest.o; SNAPOBJ="$SNAPOBJ $B/atest.o"; CFLAGS="$CFLAGS -DAUDIO_TEST"
+fi
 # 1. translated program + dispatch tables (sparse), palette
 python3 translator/x65.py "$ROM" translator/seen_abs.txt $B/code.s $B/tab.s $B/report.txt
 python3 tools/gen_tabsp.py $B/tab.s $B/tabsp.s
@@ -45,7 +59,7 @@ $LD -e 0 -Ttext=0 --oformat=binary -o $B/boot.bin $B/boot_o.o
 # 4. link
 LIBGCC=$($CC -m68020 -print-libgcc-file-name)
 $LD -T $P/link.ld -Map=$B/llb.map -o $B/llb.elf $B/crt0.o $B/code.o $B/rt_x_s.o $B/rt_x.o $B/rt_core.o $B/ppu_ref.o $B/cpu6502.o $B/mapper_mmc1.o $B/apu.o \
-   $B/c2p.o $B/display.o $B/main.o $B/audio.o $B/platform.o $B/telem.o $B/isr.o $B/libc.o $B/tabs.o $B/palette.o $B/tabsp.o $B/rom.o $LIBGCC
+   $B/c2p.o $B/display.o $B/main.o $B/audio.o $B/platform.o $B/telem.o $B/isr.o $B/libc.o $B/tabs.o $B/palette.o $B/tabsp.o $B/rom.o $SNAPOBJ $LIBGCC
 ${PREFIX}objcopy -O binary $B/llb.elf $B/llb.bin
 # 5. put the ROM (PRG then CHR, without the iNES header) into the .rom placeholder and build the disk
 python3 - "$ROM" $B/llb.elf $B/llb.bin <<'PY'

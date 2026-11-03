@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools'))
 import gen_palette
-ORIGIN = {'pal': (138, 52), 'ntsc': (138, 20)}
+ORIGIN = {'pal': (138, 52), 'ntsc': (138, 0)}
 def load_ref(path, frame):
     d = open(path, 'rb').read(); rec = 8 + 240 * 256 * 2
     for o in range(0, len(d), rec):

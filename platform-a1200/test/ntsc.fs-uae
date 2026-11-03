@@ -8,6 +8,7 @@ ntsc_mode = 1
 floppy_drive_0 = @ADF@
 floppy_drive_count = 1
 floppy_drive_speed = 0
+floppy_drive_volume = 0
 video_sync = off
 fullscreen = 0
 window_width = 768

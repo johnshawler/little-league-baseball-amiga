@@ -9,6 +9,7 @@
  */
 #include "platform.h"
 #include "audio.h"
+#include "../runtime/audio_words.h"
 
 #define R16(o)   (*(volatile uint16_t *)(0xDFF000u + (o)))
 #define R32(o)   (*(volatile uint32_t *)(0xDFF000u + (o)))
@@ -38,8 +39,7 @@ static uint8_t cur_ring, next_ring, have_next;
 volatile uint32_t audio_underruns, audio_chunks_played;
 uint16_t audio_period = 124;
 
-/* words per frame: floor((k+1)*W) - floor(k*W) with W = 5 * E_frame / (2 * period), E_frame = E-clock cycles per game tick (platform.c) */
-static uint32_t w_whole; static uint64_t w_rem, w_den, w_acc;
+static AudioWords aw;             /* words per frame (runtime/audio_words.h) */
 
 static inline void set_buf(const void *p, unsigned words)
 {
@@ -68,23 +68,14 @@ void audio_init(void)
     for (unsigned i = 0; i < SIL_WORDS * 2; i++) silence[i] = (int8_t)AUD_SILENCE;
     for (unsigned s = 0; s < AUD_SLOTS; s++) for (unsigned i = 0; i < AUD_MAX_WORDS * 2; i++) chunk[s][i] = (int8_t)AUD_SILENCE;
     audio_period = 124;
-    /* W = 5 * (base + frac/DEN) / (2*P) = 5 * (base*DEN + frac) / (2*P*DEN) */
-    uint64_t num = 5ull * ((uint64_t)plat_tick_base * PLAT_TICK_DEN + plat_tick_frac);
-    w_den = 2ull * audio_period * PLAT_TICK_DEN;
-    w_whole = (uint32_t)(num / w_den); w_rem = num % w_den; w_acc = 0;
+    aw_init(&aw, plat_tick_base, plat_tick_frac, PLAT_TICK_DEN, audio_period);
     q_head = q_next = q_tail = 0; started = 0; have_next = 0; cur_ring = next_ring = 0;
     R16(DMACON) = 0x0003; R16(INTENA) = INT_AUD0 | INT_AUD1; R16(INTREQ) = INT_AUD0 | INT_AUD1;
     R16(ADKCON) = 0x00FF;                         /* no audio modulation */
     for (unsigned c = 0; c < 2; c++) { R16(AUDVOL(c)) = 64; R16(AUDPER(c)) = audio_period; }
 }
 
-unsigned audio_words_next(void)
-{
-    unsigned w = w_whole;
-    w_acc += w_rem;
-    if (w_acc >= w_den) { w_acc -= w_den; w++; }
-    return w;
-}
+unsigned audio_words_next(void) { return aw_next(&aw); }
 
 unsigned audio_free_slots(void) { return AUD_SLOTS - (q_head - q_tail); }
 
