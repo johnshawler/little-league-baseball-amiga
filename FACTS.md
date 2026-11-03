@@ -1,5 +1,7 @@
 # Little League Baseball: Championship Series (NES) → Amiga 1200: Facts page
 
+> Discovery-phase document (written before the port was built). Later measurements and the as-built design are in `docs/DESIGN.md` and `docs/VERIFICATION.md`.
+
 Status: DISCOVERY only. Nothing has been ported yet. Every fact is tagged
 **[driver]** (MAME source, quoted), **[ROM]** (derived from the ROM and/or a reference-emulator trace) or **[assumed]**.
 Raw statistics behind the [ROM] facts are in `docs/stats_*.txt`; the scripts that produce them are in `tools/discovery/`.
@@ -69,7 +71,7 @@ every `$2000+` read and write is logged with the CPU cycle and frame number. Run
 
 ### Video
 * PPU registers used: `$2000` values `00 04 10-13 90-93 B0` (NMI on, BG pattern table `$1000`, sprite table `$0000`, **both 8×8 (`90..`) and 8×16 (`B0`) sprites**, nametable select, VRAM increment 1/32), `$2001` values `00 1E 40` (`1E` = BG+sprites on incl. left 8 px; `40` = rendering off with colour emphasis, 25 times: screen transitions),
-  `$2003`+`$4014` OAM DMA **once per frame** (plus 256 `$2004` writes per frame: an OAM clear/refresh before the DMA), `$2005/$2006/$2007` for scroll and VRAM/palette updates; **no reads of `$2004` or `$2007`**.
+  `$2003`+`$4014` OAM DMA **once per frame** (the 256 `$2004` writes per frame seen in the trace are the DMA's own writes), `$2005/$2006/$2007` for scroll and VRAM/palette updates; **no reads of `$2004` or `$2007`**.
 * **Mid-frame effects exist**: a sprite-0-hit split (the CPU is busy in the NMI handler until the hit, then writes the scroll registers), **plus mid-frame CHR 4 KB bank switches** (MMC1 reg1/reg2 loads, ~1.5 per frame, written in two places in the frame: about scanline 60 and about scanlines 95-115, measured as 30 phase bins of the frame since NMI entry, so ±9 scanlines) and `$2000` writes at about scanline 113 (coarse; the exact scanline per effect still has to be measured per scene). Scroll/`$2006` writes outside vblank occur too (forced blank during screen loads: `$2001` rendering off). (`docs/stats_cycles_phase.txt`, phase table)
   Consequence: the video model must be **scanline-segmented** (render with the state that was in force at each scanline), and the sprite-0 hit must be produced at the right pixel/scanline.
 * CHR is **ROM only** (128 KB = 32 × 4 KB banks, 2 bpp tiles, never written by the CPU), so every tile can be converted to Amiga bitplane format once at build time. Name tables: 2 KB of PPU RAM, vertical mirroring (fixed). Palette RAM 32 bytes, OAM 256 bytes (64 sprites, 8 per scanline limit).

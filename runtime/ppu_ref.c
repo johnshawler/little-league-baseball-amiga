@@ -278,8 +278,8 @@ static int eval_sprites_fast(Nes*n,int y,FSpr*sp,int*s0,int*ovf){
 }
 long ppu_fast_lines;
 static void render_line_fast(Nes*n,int y,uint16_t vline){
-    Ppu*p=P; ppu_fast_lines++; uint16_t*row=&p->fb[y<<8];
-    uint16_t emph=(uint16_t)(p->emph<<6); uint8_t gm=p->gray?0x30:0x3F;
+    Ppu*p=P; ppu_fast_lines++; __typeof__(p->fb[0])*row=&p->fb[y<<8];
+    uint8_t emph=p->emph; uint8_t gm=p->gray?0x30:0x3F;
     if(!p->rend){
         int idx= ((p->v&0x3F00)!=0x3F00) ? 0 : (p->v&0x1F);
         __typeof__(p->fb[0]) c=FBVAL(p->pal[idx]&gm,emph); for(int x=0;x<256;x++) row[x]=c; return;
