@@ -7,7 +7,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "../runtime/rt.h"
+static double now(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return t.tv_sec+t.tv_nsec*1e-9; }
+static double t_render; static uint64_t n_samples;
 typedef struct { uint32_t t; uint8_t l; } E;
 typedef struct { E *v; size_t n, cap; } Vec;
 static void push(Vec *x, uint32_t t, uint8_t l){   /* normalising push: same-cycle events collapse to the last level, no-change events vanish */
@@ -28,7 +31,7 @@ static void frame(long f){
         static uint64_t k0; static int16_t buf[8192];
         uint64_t k1=rt.cyc*RATE/APU_CPU_HZ;
         while(k0<k1){ uint64_t k=k0+(k1-k0>8192?8192:k1-k0);
-            apu_render16(&rt_apu,k0*APU_CPU_HZ/RATE,k*APU_CPU_HZ/RATE,buf,(unsigned)(k-k0)); fwrite(buf,2,(size_t)(k-k0),pcm); k0=k; }
+            double t0=now(); apu_render16(&rt_apu,k0*APU_CPU_HZ/RATE,k*APU_CPU_HZ/RATE,buf,(unsigned)(k-k0)); t_render+=now()-t0; n_samples+=k-k0; fwrite(buf,2,(size_t)(k-k0),pcm); k0=k; }
         return;
     }
     apu_flush(&rt_apu, rt.cyc);
@@ -44,7 +47,7 @@ int main(int argc,char**argv){
     if(getenv("PCMOUT")) pcm=fopen(getenv("PCMOUT"),"wb");   /* render mode: mono int16 48 kHz, no event comparison */
     rt_init(d+16,d+16+131072); rt.input_hook=input; rt.frame_hook=frame;
     rt_run_interp(nf);
-    if(pcm){ fclose(pcm); fprintf(stderr,"rendered, dropped %u\n",rt_apu.dropped); return 0; }
+    if(pcm){ fclose(pcm); fprintf(stderr,"rendered, dropped %u; apu_render16 (incl. event generation): %.3f s for %llu samples = %.1f ns/sample, %.2f ms per 60 Hz frame\n",rt_apu.dropped,t_render,(unsigned long long)n_samples,t_render/n_samples*1e9,t_render/nf*1e3); return 0; }
     { uint32_t t; int ch,l; apu_flush(&rt_apu,rt.cyc); while(apu_pop_event(&rt_apu,rt.cyc,&t,&ch,&l)) push(&mine[ch],t,(uint8_t)l); }
     if(argc>5){ /* dump my normalised events merged by time: {u32 cc,u8 ch,u8 lvl,u16 0} */
         FILE*o=fopen(argv[5],"wb"); size_t ix[4]={0,0,0,0};
