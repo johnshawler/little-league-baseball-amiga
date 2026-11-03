@@ -192,6 +192,7 @@ class Gen:
             self.stubs.append((slow,[f'add.l #{self.tot+npen},d5',f'move.w #0x{key[1]:X},d7','jmp rt_slow']))
         for idx,i in enumerate(ins):
             self.i=i; self.idx=idx; self.next=ins[idx+1] if idx+1<len(ins) else None
+            self.cur.append(f'\t| @{i.ctx}:{i.addr:04X}')
             self.gen_ins(i); self.cum+=i.cyc; self.stats[i.m]+=1
         last=ins[-1]
         if last.m not in TERM_JMP and last.m!='JSR': self.exit_fall(b)

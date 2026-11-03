@@ -132,7 +132,7 @@ static void draw_pixel(Nes *n){
     if(p->rend || (p->v&0x3F00)!=0x3F00){ c=pixel_color(p); idx=(c&3)?c:0; }
     else { idx=p->v&0x1F; (void)pixel_color(p); }
     uint8_t col=p->pal[idx];
-    p->fb[(p->line<<8)+p->cx-1]=(uint16_t)((col&(p->gray?0x30:0x3F))|(p->emph<<6));
+    p->fb[(p->line<<8)+p->cx-1]=FBVAL(col&(p->gray?0x30:0x3F),p->emph);
 }
 
 static void process_scanline(Nes *n){
@@ -282,7 +282,7 @@ static void render_line_fast(Nes*n,int y,uint16_t vline){
     uint16_t emph=(uint16_t)(p->emph<<6); uint8_t gm=p->gray?0x30:0x3F;
     if(!p->rend){
         int idx= ((p->v&0x3F00)!=0x3F00) ? 0 : (p->v&0x1F);
-        uint16_t c=(uint16_t)((p->pal[idx]&gm)|emph); for(int x=0;x<256;x++) row[x]=c; return;
+        __typeof__(p->fb[0]) c=FBVAL(p->pal[idx]&gm,emph); for(int x=0;x<256;x++) row[x]=c; return;
     }
     /* background tiles of this line: tile j (0..32) uses the nametable column (coarse X0 + j) */
     uint8_t tlo[34],thi[34],tpal[34];
@@ -316,7 +316,7 @@ static void render_line_fast(Nes*n,int y,uint16_t vline){
                 }
             }
         }
-        row[x]=(uint16_t)((p->pal[(col&3)?col:0]&gm)|emph);
+        row[x]=FBVAL(p->pal[(col&3)?col:0]&gm,emph);
     }
 }
 /* make the pipeline state identical to the per-dot model after dot 340 of line ycomplete (rendering on); vline = v at output start of that line */

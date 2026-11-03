@@ -18,6 +18,11 @@ void mmc1_reset(Mapper *m);
 void mmc1_write(Mapper *m, uint16_t addr, uint8_t v);   /* $8000-$FFFF */
 
 /* ---------------------------------------------------------------- PPU */
+#ifdef PPU_FB8
+#define FBVAL(c,e) ((uint8_t)((c)|(((e)&3)<<6)))
+#else
+#define FBVAL(c,e) ((uint16_t)((c)|((e)<<6)))
+#endif
 typedef struct { uint16_t addr; uint8_t paloff, lo, hi, offy; } Tile;
 typedef struct { uint8_t lo, hi, x, paloff, bgprio, hflip, vflip; } SpriteTile;
 typedef struct {
@@ -43,7 +48,11 @@ typedef struct {
     SpriteTile st[8]; uint8_t has_sprite[264];
     int      sp_count, sp_index, s0_visible, s0_added, sp_inrange, copy_done, ovf_bug;
     uint8_t  oamcopy, sec_addr, addrH, addrL;
+#ifdef PPU_FB8
+    uint8_t  fb[240*256];             /* Amiga build: NES colour (6 bit) | (red,green emphasis)<<6; blue emphasis is not displayed */
+#else
     uint16_t fb[240*256];             /* colour per pixel: NES colour (6 bit) | emphasis<<6 (| gray applied) */
+#endif
     int      frame_done;
     int      nmi_level;               /* NMI line level (Mesen: NMIFlag) */
 } Ppu;

@@ -18,7 +18,7 @@ static void trace(char t, uint16_t a, uint8_t v, int32_t ab){
         if(m.t!=r.t||m.a!=r.a||m.v!=r.v||m.cyc!=r.cyc){ fprintf(stderr,"DIVERGE at record %ld: ref %c a=%04x v=%02x cyc=%u | mine %c a=%04x v=%02x cyc=%u\n",cmpn,m.t,m.a,m.v,m.cyc,r.t,r.a,r.v,r.cyc); exit(1); } cmpn++; return; }
     if(trc) fwrite(&r,sizeof r,1,trc); }
 static uint8_t input(int port, long frame){
-    if(port) return 0; unsigned m=0; for(int i=0;i<ns;i++){ if(sf[i]<=frame) m=sm[i]; else break; }
+    unsigned m=0; for(int i=0;i<ns;i++){ if(sf[i]<=frame) m=sm[i]; else break; } if(port) m>>=16;
     uint8_t b=0; if(m&0x100) b|=1; if(m&1) b|=2; if(m&4) b|=4; if(m&8) b|=8; if(m&0x10) b|=16; if(m&0x20) b|=32; if(m&0x40) b|=64; if(m&0x80) b|=128; return b;
 }
 static void frame(long f){ if(fbf){ static uint8_t buf[240*256*2]; for(int i=0;i<240*256;i++){ buf[2*i]=(uint8_t)nes.ppu.fb[i]; buf[2*i+1]=(uint8_t)(nes.ppu.fb[i]>>8); }
