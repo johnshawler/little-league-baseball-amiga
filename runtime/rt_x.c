@@ -1,7 +1,11 @@
 /* rt_x.c - C side of the glue between translated code and the runtime: I/O helpers with exact access cycles, the slow path (interpreter) and the
  * computation of the cycle limit up to which translated code may run without looking at the PPU. */
+#ifdef AMIGA     /* freestanding Amiga build: no libc, no environment, no files; debug code is compiled out; an illegal opcode ends in rt_fatal() */
+extern void rt_fatal(int code) __attribute__((noreturn));
+#else
 #include <stdlib.h>
 #include <stdio.h>
+#endif
 #include "rt.h"
 #include "rt_x.h"
 XCtx xrt_ctx;
@@ -45,7 +49,6 @@ uint32_t xrt_rd_c(uint32_t addr, int32_t d5, int32_t adj){
 }
 int32_t xrt_wr_c(uint32_t addr, uint32_t val, int32_t d5, int32_t adj){
     uint64_t c=rt.limit-(int64_t)d5+adj; uint16_t a=(uint16_t)addr;
-    if(0) fprintf(stderr,"wr %04x c=%llu limit=%llu d5=%d adj=%d\n",a,(unsigned long long)c,(unsigned long long)rt.limit,d5,adj);
     if(a>=0x2000) trace_c('W',a,(uint8_t)val,c);
     rt_io_wr(a,(uint8_t)val,c);
     if(a>=0x8000) load_mapper_ptrs();
@@ -67,11 +70,16 @@ int32_t xrt_slow_c(int32_t pc_in){
         rt.cyc=rt.limit-(int64_t)(int32_t)c->d[5];
         rt_nmi_check();
     }
-    int steps=0; static uint64_t dlo=0,dhi=0; if(!dhi&&getenv("XDBGLO")){ dlo=strtoull(getenv("XDBGLO"),0,10); dhi=strtoull(getenv("XDBGHI"),0,10); } int dbg=dhi&&rt.cyc>dlo&&rt.cyc<dhi; if(dbg) fprintf(stderr,"slow in pc=%d cyc=%llu limit=%llu d5=%d\n",pc_in,(unsigned long long)rt.cyc,(unsigned long long)rt.limit,(int)c->d[5]);
+#ifndef AMIGA
+    static uint64_t dlo=0,dhi=0; if(!dhi&&getenv("XDBGLO")){ dlo=strtoull(getenv("XDBGLO"),0,10); dhi=strtoull(getenv("XDBGHI"),0,10); } int dbg=dhi&&rt.cyc>dlo&&rt.cyc<dhi; if(dbg) fprintf(stderr,"slow in pc=%d cyc=%llu limit=%llu d5=%d\n",pc_in,(unsigned long long)rt.cyc,(unsigned long long)rt.limit,(int)c->d[5]);
+#endif
     for(;;){
+#ifndef AMIGA
         if(dbg) fprintf(stderr,"  step pc=%04x cyc=%llu\n",cpu->pc,(unsigned long long)rt.cyc);
         if(rt_step()<0){ fprintf(stderr,"illegal opcode at %04x\n",cpu->pc); exit(3); }
-        steps++;
+#else
+        if(rt_step()<0) rt_fatal(3);          /* undocumented opcode: never executed by this game */
+#endif
         rt.limit=rt_compute_limit_at(rt.cyc);
         if(rt.frames_done>=c->frames_target) break;
         if(xl_is_entry(cpu->pc) && rt.limit>rt.cyc+24 && !rt.need_halt) break;
@@ -90,6 +98,7 @@ void xrt_run(long frames){
     extern void xrt_enter(void); xrt_enter();
 }
 
+#ifndef AMIGA
 /* debug: check every block entry against the reference trace (XCHK=trace file): the first instruction of the block must be fetched at cycle now0+1 */
 static FILE *xchk; static uint64_t xchk_cyc; static long xchk_n;
 void xrt_dbg_c(uint32_t pc, int32_t d5, int32_t tot){
@@ -106,6 +115,9 @@ void xrt_dbg_c(uint32_t pc, int32_t d5, int32_t tot){
     }
     xchk_n++;
 }
+#else
+void xrt_dbg_c(uint32_t pc, int32_t d5, int32_t tot){ (void)pc; (void)d5; (void)tot; }
+#endif
 
 /* skip the polls of a $2002 wait loop that cannot see a change yet.  kind 0: BIT $2002 / BVS self (waits for the sprite-0 flag to clear, 7 cycles per
  * iteration); kind 1: BIT $2002 / BMI out / BVC self (waits for vblank or the sprite-0 hit, 9 cycles).  Called when the loop is about to be taken
@@ -129,7 +141,9 @@ int32_t xrt_skip_c(int32_t kind, int32_t d5){
     }
     uint64_t c0=now+4, cmin=(T<=4)?0:(T-4+2)/3;          /* first read that can see the change */
     if(cmin<=c0) return 0;
+#ifndef AMIGA
     if(getenv("XSKIPDBG")&&now>10273000&&now<10290000) fprintf(stderr,"skip kind %d now %llu line %d cx %d T %llu tvbl %llu cmin %llu\n",(int)kind,(unsigned long long)now,p->line,p->cx,(unsigned long long)T,(unsigned long long)tvbl,(unsigned long long)cmin);
+#endif
     uint64_t n=(cmin-c0+Li-1)/Li;
     if(rt.limit<=now+64) return 0;
     uint64_t nmax=(rt.limit-now-64)/Li; if(n>nmax) n=nmax;

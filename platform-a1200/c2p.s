@@ -1,11 +1,14 @@
-| c2p.s - Zoo Keeper A1200: chunky -> 8 interleaved bitplanes, hand-written 68020 kernels used by display.c.
-| The 16-pixel kernel (five merge steps, generated and verified against the bit-by-bit transpose; see DESIGN.md) is the same as the former inline asm.
-|   c2p_pair(src, dst)          16 chunky bytes (4-byte aligned) -> 8 plane words at dst + 32 * p      (test hook, same code as the row loop)
-|   c2p_row(src, dst, flags)    one VRAM row: flags = the 32 dirty-group bytes; every aligned pair of groups with a set flag is converted and its flags cleared
+| c2p.s - Little League Baseball A1200: chunky -> 8 interleaved bitplanes, hand-written 68020 kernels used by display.c.
+| The 16-pixel kernel (five merge steps, verified against the bit-by-bit transpose in the Zoo Keeper port) is unchanged.
+|   c2p_pair(src, dst)             16 chunky bytes (4-byte aligned) -> 8 plane words at dst + 32 * p      (test hook, same code as the frame loop)
+|   c2p_frame(src, dst, shadow)    256x240 chunky frame -> interleaved planes (line y of plane p at dst + y*256 + p*32).  `shadow` holds the chunky
+|                                  frame that `dst` currently shows: every aligned pair of groups (16 pixels) that equals the shadow is skipped;
+|                                  converted pairs are copied to the shadow.  Returns the number of converted pairs.
+|   c2p_frame_all(src, dst)        the same without comparison (whole frame)
 | C ABI: arguments on the stack, d2-d7 / a2-a6 preserved.
 	.text
 	.even
-	.globl c2p_pair, c2p_row, c2p_uni_words
+	.globl c2p_pair, c2p_frame, c2p_uni_words
 | a0 = src, a1 = dst (preserved), clobbers d0-d4 a3
 .Lpair:
 	move.l (%a0),%d0
@@ -125,32 +128,63 @@ c2p_pair:
 	movem.l (%sp)+,%d2-%d4/%a3
 	rts
 
-c2p_row:
-	movem.l %d2-%d4/%d7/%a2-%a3,-(%sp)
-	move.l 28(%sp),%a0			| src (VRAM row)
-	move.l 32(%sp),%a1			| dst (plane 0 of the screen line)
-	move.l 36(%sp),%a2			| flags
-	moveq #7,%d7				| eight longs of flags = 16 pairs
-.Lq:
-	tst.l (%a2)
-	jbeq .Lskip
-	tst.w (%a2)
-	jbeq .Lsecond
-	clr.w (%a2)
+| long c2p_frame(src, dst, shadow)
+c2p_frame:
+	movem.l %d2-%d7/%a2-%a3,-(%sp)
+	move.l 36(%sp),%a0			| src
+	move.l 40(%sp),%a1			| dst
+	move.l 44(%sp),%a2			| shadow
+	moveq #0,%d5				| converted pairs
+	move.w #239,%d7				| rows
+.Lrow:
+	moveq #15,%d6				| pairs per row
+.Lp:
+	move.l (%a0),%d0
+	cmp.l (%a2),%d0
+	jbne .Lconv
+	move.l 4(%a0),%d0
+	cmp.l 4(%a2),%d0
+	jbne .Lconv
+	move.l 8(%a0),%d0
+	cmp.l 8(%a2),%d0
+	jbne .Lconv
+	move.l 12(%a0),%d0
+	cmp.l 12(%a2),%d0
+	jbne .Lconv
+.Lnext:
+	lea 16(%a0),%a0
+	lea 16(%a2),%a2
+	addq.l #2,%a1
+	dbra %d6,.Lp
+	lea 224(%a1),%a1			| next line: stride 256, 32 bytes advanced
+	dbra %d7,.Lrow
+	move.l %d5,%d0
+	movem.l (%sp)+,%d2-%d7/%a2-%a3
+	rts
+.Lconv:
+	move.l (%a0),(%a2)
+	move.l 4(%a0),4(%a2)
+	move.l 8(%a0),8(%a2)
+	move.l 12(%a0),12(%a2)
+	addq.l #1,%d5
 	jbsr .Lpair
-.Lsecond:
-	tst.w 2(%a2)
-	jbeq .Lskip
-	clr.w 2(%a2)
+	jbra .Lnext
+
+| long c2p_frame_all(src, dst): same conversion, no comparison
+	.globl c2p_frame_all
+c2p_frame_all:
+	movem.l %d2-%d7/%a2-%a3,-(%sp)
+	move.l 36(%sp),%a0
+	move.l 40(%sp),%a1
+	move.w #239,%d7
+.Lrow2:
+	moveq #15,%d6
+.Lp2:
+	jbsr .Lpair
 	lea 16(%a0),%a0
 	addq.l #2,%a1
-	jbsr .Lpair
-	lea -16(%a0),%a0
-	subq.l #2,%a1
-.Lskip:
-	lea 32(%a0),%a0
-	addq.l #4,%a1
-	addq.l #4,%a2
-	dbra %d7,.Lq
-	movem.l (%sp)+,%d2-%d4/%d7/%a2-%a3
+	dbra %d6,.Lp2
+	lea 224(%a1),%a1
+	dbra %d7,.Lrow2
+	movem.l (%sp)+,%d2-%d7/%a2-%a3
 	rts

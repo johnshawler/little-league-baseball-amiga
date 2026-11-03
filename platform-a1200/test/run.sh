@@ -1,6 +1,6 @@
 #!/bin/bash
 # usage: run.sh <pal|ntsc> <out_prefix> <boot_seconds> [inject-script]
-# Boots build/a1200/zookeeper_a1200.adf in FS-UAE (A1200 model, 68EC020, 2 MB chip, no other memory) headless under
+# Boots $ADF in FS-UAE (A1200 model, 68EC020, 2 MB chip, no other memory) headless under
 # Xvfb.  The optional inject-script is `source`d after the boot delay with DISPLAY
 # set; it can call
 #     key <xdotool args>   - send keys to the emulator window
@@ -12,8 +12,9 @@ std=$1; out=$2; secs=${3:-15}; script=$4
 tmp=$(mktemp -d)
 cfg="$here/.run_$$.fs-uae"
 : "${KICK:?set KICK=/path/to/kickstart.rom (test only - never part of the deliverables)}"
-ADF=${ADF:-$here/../../build/a1200/zookeeper_a1200.adf}
+ADF=${ADF:?set ADF=/path/to/llb.adf}
 sed -e "s|@KICK@|$KICK|" -e "s|@ADF@|$ADF|" -e "s|^\[end\]|screenshots_output_dir = $tmp\n[end]|" "$here/$std.fs-uae" > "$cfg"
+[ -n "$FAST" ] && sed -i 's|^\[end\]|accuracy = 0\nuae_cpu_speed = max\nuae_cpu_compatible = false\n[end]|' "$cfg"   # FAST=1: functional tests, the emulated CPU runs as fast as the host allows (not real A1200 speed)
 cd "$here"
 if [ -n "$AUDIO_OUT" ]; then   # record the emulated Paula output through OpenAL-soft's wave backend
   cat > "$tmp/alsoft.conf" <<EOT

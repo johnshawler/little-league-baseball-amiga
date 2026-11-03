@@ -1,0 +1,141 @@
+/* main.c - Little League Baseball on the A1200: start-up, frame loop (pacing, display, audio), input.
+ * The translated NES program and the runtime run on the machine; once per NES frame the runtime calls on_frame() (rt.frame_hook, at the start of
+ * line 240 when the picture is complete).  See docs/AMIGA.md. */
+#include <stdint.h>
+#include "platform.h"
+#include "display.h"
+#include "audio.h"
+#include "telem.h"
+#include "../runtime/rt.h"
+#include "../runtime/rt_x.h"
+
+extern const uint8_t rom_start[];             /* PRG 128 KB then CHR 128 KB (linker symbol: the .rom section, patched into the disk image) */
+extern void tabs_expand(void);
+
+#ifndef BACKLOG_MAX
+#define BACKLOG_MAX 8                  /* game clock ticks the game may be behind real time before the lag is dropped (catch-up burst limit) */
+#endif
+#ifndef DISPLAY_SKIP_MAX
+#define DISPLAY_SKIP_MAX 3             /* consecutive frames whose picture conversion is skipped while behind real time */
+#endif
+
+void rt_fatal(int code)                /* illegal opcode in the slow path: paint the screen red/orange and stop */
+{
+    for (;;) plat_set_color(0, code == 3 ? 0x0F40 : 0x0F00);
+}
+
+/* ------------------------------------------------------------------ input */
+#ifdef TESTINPUT      /* test builds: the controller is driven by a frame script (same file format and mapping as tools/rt_host.c: "frame hexmask", libretro bits) instead of the hardware */
+static const struct { uint32_t f, m; } test_script[] = {
+#include "testinput.inc"
+};
+static uint8_t input(int port, long frame)
+{
+    uint32_t m = 0;
+    if (port) return 0;
+    for (unsigned i = 0; i < sizeof test_script / sizeof test_script[0]; i++) { if (test_script[i].f <= (uint32_t)frame) m = test_script[i].m; else break; }
+    uint8_t b = 0;
+    if (m & 0x100) b |= 1; if (m & 1) b |= 2; if (m & 4) b |= 4; if (m & 8) b |= 8; if (m & 0x10) b |= 16; if (m & 0x20) b |= 32; if (m & 0x40) b |= 64; if (m & 0x80) b |= 128;
+    return b;
+}
+#else
+static uint8_t input(int port, long frame)
+{
+    (void)frame;
+    uint16_t j = plat_joy_bits((unsigned)port);
+    uint8_t b = 0;
+    if (j & PIN_FIRE)  b |= 0x01;      /* A */
+    if (j & PIN_BTN2)  b |= 0x02;      /* B */
+    if (j & PIN_UP)    b |= 0x10;
+    if (j & PIN_DOWN)  b |= 0x20;
+    if (j & PIN_LEFT)  b |= 0x40;
+    if (j & PIN_RIGHT) b |= 0x80;
+    if (plat_key_down(KEY_SPACE)) b |= 0x04;                                    /* Select */
+    if (plat_key_down(KEY_RETURN) || plat_key_down(KEY_ENTER)) b |= 0x08;       /* Start */
+    return b;
+}
+#endif
+
+/* ------------------------------------------------------------------ statistics (read back through the telemetry page) */
+static uint32_t game_base;             /* game clock tick at which frame 0 is due */
+static uint32_t st_idle, st_audio, st_disp, st_late, st_dskip, st_dconv, st_maxlag;
+static uint8_t skip_run;
+static uint64_t a_from;
+
+static inline uint32_t e_since(uint16_t t0) { return (uint16_t)(t0 - plat_eclock()); }
+
+static void on_frame(long f)
+{
+    uint16_t t0;
+    uint32_t deadline = game_base + (uint32_t)f + 1;
+    int32_t lag = (int32_t)(plat_tick_count - deadline);
+
+    /* 1. pace to the game clock; when late, run on (catch-up) up to BACKLOG_MAX ticks, then drop the lag */
+    if (lag < 0) { t0 = plat_eclock(); plat_wait_ticks(deadline); st_idle += e_since(t0); lag = 0; }
+    else if (lag > BACKLOG_MAX) { game_base += (uint32_t)(lag - BACKLOG_MAX); lag = BACKLOG_MAX; }
+    if (lag > 0) st_late++;
+    if ((uint32_t)lag > st_maxlag) st_maxlag = (uint32_t)lag;
+
+    /* 2. picture: skipped while behind real time (at most DISPLAY_SKIP_MAX frames in a row) */
+    if (lag > 0 && skip_run < DISPLAY_SKIP_MAX) { skip_run++; st_dskip++; }
+    else {
+        skip_run = 0; t0 = plat_eclock();
+        if (display_frame(nes.ppu.fb)) st_dconv++;
+        st_disp += e_since(t0);
+#ifdef TELEM
+        {
+            uint32_t w[8 * 8] = { TELEM_MAGIC, plat_tick_count, (uint32_t)f + 1, plat_vbl_count, audio_underruns, audio_chunks_played, st_dconv, st_dskip,
+                                  st_idle, st_audio, st_disp, st_late, st_maxlag, display_pairs_last, plat_is_pal, rt_apu.dropped };
+            telem_draw(plat_buf[display_back() ^ 1], w, 16, 224);
+        }
+#endif
+    }
+
+#ifdef STOP_AT      /* test builds: show the picture of frame STOP_AT (hook index, as FBDUMP of tools/rt_host.c) and stop */
+    if (f == STOP_AT) {
+        while (!display_frame(nes.ppu.fb)) plat_wait_vbl();
+        for (;;) __asm__ volatile("stop #0x2000");
+    }
+#endif
+    /* 3. sound: the samples of this frame; wait for a free slot if the ring is full (the game is ahead of Paula) */
+    {
+        int8_t *buf = audio_alloc();
+        if (!buf) { t0 = plat_eclock(); do plat_wait_ticks(plat_tick_count + 1); while (!(buf = audio_alloc())); st_idle += e_since(t0); }
+        t0 = plat_eclock();
+        unsigned w = audio_words_next();
+        uint64_t to = nes.ppu.dots / 3 - 2;
+        apu_render8(&rt_apu, a_from, to, buf, 2 * w);
+        a_from = to;
+        audio_commit(w);
+        st_audio += e_since(t0);
+    }
+#ifdef PROFILE
+    {
+        static uint8_t done;
+        if (plat_tick_count >= PHI + 60 && !done) { done = 1; display_freeze(); telem_prof_report(plat_buf[display_back() ^ 1]); plat_show(display_back() ^ 1); }
+    }
+#endif
+}
+
+#ifdef TELEM
+static void stage(uint32_t n) { uint32_t w[2] = { TELEM_MAGIC, 0x80000000u | n }; telem_draw(plat_buf[0], w, 2, 224); }
+#else
+#define stage(n) ((void)0)
+#endif
+void main(void)
+{
+    display_init();
+    stage(1);
+    tabs_expand();
+    stage(2);
+    audio_init();
+    stage(3);
+    rt_init(rom_start, rom_start + 131072);
+    stage(4);
+    rt.input_hook = input;
+    rt.frame_hook = on_frame;
+    a_from = 0;
+    game_base = plat_tick_count;
+    xrt_run(0x7FFFFFFF);
+    for (;;) { }
+}

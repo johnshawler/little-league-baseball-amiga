@@ -7,3 +7,4 @@
 *.pcm
 *.adf
 build/
+__pycache__/

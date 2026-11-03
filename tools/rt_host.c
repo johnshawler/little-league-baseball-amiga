@@ -21,12 +21,13 @@ static uint8_t input(int port, long frame){
     unsigned m=0; for(int i=0;i<ns;i++){ if(sf[i]<=frame) m=sm[i]; else break; } if(port) m>>=16;
     uint8_t b=0; if(m&0x100) b|=1; if(m&1) b|=2; if(m&4) b|=4; if(m&8) b|=8; if(m&0x10) b|=16; if(m&0x20) b|=32; if(m&0x40) b|=64; if(m&0x80) b|=128; return b;
 }
-static void frame(long f){ if(fbf){ static uint8_t buf[240*256*2]; for(int i=0;i<240*256;i++){ buf[2*i]=(uint8_t)nes.ppu.fb[i]; buf[2*i+1]=(uint8_t)(nes.ppu.fb[i]>>8); }
+static long fbsel[64]; static int nfbsel;     /* FBFRAMES=a,b,c : dump only these frames (hook index) */
+static void frame(long f){ if(fbf){ if(nfbsel){ int ok=0; for(int i=0;i<nfbsel;i++) if(fbsel[i]==f) ok=1; if(!ok) return; } static uint8_t buf[240*256*2]; for(int i=0;i<240*256;i++){ buf[2*i]=(uint8_t)nes.ppu.fb[i]; buf[2*i+1]=(uint8_t)(nes.ppu.fb[i]>>8); }
     uint8_t h[8]; for(int i=0;i<8;i++) h[i]=(uint8_t)((uint64_t)f>>(8*i)); fwrite(h,1,8,fbf); fwrite(buf,1,sizeof buf,fbf); } }
 int main(int argc,char**argv){
     FILE*f=fopen(argv[1],"rb"); fseek(f,0,SEEK_END); long sz=ftell(f); rewind(f); uint8_t*d=malloc(sz); if(fread(d,1,sz,f)!=(size_t)sz) return 1; fclose(f);
     long nf=atol(argv[2]); FILE*sc=fopen(argv[3],"r"); while(sc&&fscanf(sc,"%ld %x",&sf[ns],&sm[ns])==2) ns++;
-    if(argc>4 && strcmp(argv[4],"-")) trc=fopen(argv[4],"wb"); nox=getenv("CMP_NOX")!=0; no2002=getenv("CMP_NO2002")!=0; if(getenv("TRACECMP")) cmpf=fopen(getenv("TRACECMP"),"rb"); if(getenv("FBDUMP")) fbf=fopen(getenv("FBDUMP"),"wb");
+    if(argc>4 && strcmp(argv[4],"-")) trc=fopen(argv[4],"wb"); nox=getenv("CMP_NOX")!=0; no2002=getenv("CMP_NO2002")!=0; if(getenv("TRACECMP")) cmpf=fopen(getenv("TRACECMP"),"rb"); if(getenv("FBDUMP")) fbf=fopen(getenv("FBDUMP"),"wb"); if(getenv("FBFRAMES")){ char*p=getenv("FBFRAMES"); while(*p&&nfbsel<64){ fbsel[nfbsel++]=strtol(p,&p,10); if(*p==',') p++; } }
     extern int rt_fast_ppu; if(getenv("RT_NOFAST")) rt_fast_ppu=0;
     rt_init(d+16,d+16+131072); rt.input_hook=input; rt.frame_hook=frame; if(trc||cmpf) rt.trace_hook=trace;
 #ifdef XRT

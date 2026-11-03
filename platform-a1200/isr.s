@@ -23,8 +23,8 @@
     rte
     .endm
 
-    ISRP isr_vbl,  plat_isr_vbl_c       | level 3  VERTB
-    ISRP isr_ciab, plat_isr_ciab_c      | level 6  CIA-B (game tick)
+    ISR  isr_vbl,  plat_isr_vbl_c       | level 3  VERTB
+    ISR  isr_ciab, plat_isr_ciab_c      | level 6  CIA-B (game clock)
     ISRP isr_ports, plat_isr_ports_c     | level 2  CIA-A (keyboard)
     ISR isr_aud,   plat_isr_audio_c     | level 4  Paula audio
 

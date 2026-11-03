@@ -1,0 +1,53 @@
+/* display.c - NES chunky frame -> AGA bitplanes.  See display.h. */
+#include <stdint.h>
+#include "platform.h"
+#include "display.h"
+
+extern const uint32_t nes_rgb[256];
+extern uint16_t c2p_uni_words[256][8];
+extern long c2p_frame(const uint8_t *src, uint8_t *dst, uint8_t *shadow);
+extern long c2p_frame_all(const uint8_t *src, uint8_t *dst);
+extern void c2p_pair(const uint8_t *src, uint8_t *dst);
+
+uint16_t c2p_uni_words[256][8] __attribute__((aligned(4)));   /* plane words of 16 pixels of one colour (all ones / all zeros) */
+uint8_t display_shadow[2][240 * 256] __attribute__((aligned(4)));
+uint32_t display_pairs_last;
+static uint8_t back;
+static uint8_t force_all[2], frozen;
+
+unsigned display_back(void) { return back; }
+void display_c2p_pair(const uint8_t *src, uint8_t *dst) { c2p_pair(src, dst); }
+
+void display_init(void)
+{
+    for (unsigned v = 0; v < 256; v++) for (unsigned p = 0; p < 8; p++) c2p_uni_words[v][p] = ((v >> p) & 1) ? 0xFFFF : 0;
+    plat_set_palette256(nes_rgb);
+    for (unsigned b = 0; b < 2; b++) {
+        uint32_t *s = (uint32_t *)display_shadow[b], *d = (uint32_t *)plat_buf[b];
+        for (unsigned i = 0; i < 240 * 256 / 4; i++) { s[i] = 0; d[i] = 0; }        /* colour index 0 everywhere: planes all zero */
+        force_all[b] = 0;
+    }
+    back = 1;
+    plat_show(0);
+}
+
+void display_invalidate(void) { force_all[0] = force_all[1] = 1; }
+
+int display_frame(const uint8_t *fb)
+{
+    if (frozen || plat_show_pending()) return 0;
+    unsigned b = back;
+    if (force_all[b]) {
+        force_all[b] = 0;
+        c2p_frame_all(fb, plat_buf[b]);
+        uint32_t *s = (uint32_t *)display_shadow[b]; const uint32_t *f = (const uint32_t *)fb;
+        for (unsigned i = 0; i < 240 * 256 / 4; i++) s[i] = f[i];
+        display_pairs_last = 240 * 16;
+    } else {
+        display_pairs_last = (uint32_t)c2p_frame(fb, plat_buf[b], display_shadow[b]);
+    }
+    plat_show(b);
+    back = (uint8_t)(b ^ 1);
+    return 1;
+}
+void display_freeze(void) { frozen = 1; }

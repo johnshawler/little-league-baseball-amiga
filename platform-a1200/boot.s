@@ -1,4 +1,4 @@
-| boot.s - Zoo Keeper Amiga 1200 bootblock (KS 3.x, 68020+).  Must stay <= 1024 bytes.
+| boot.s - Little League Baseball Amiga 1200 bootblock (KS 3.x, 68020+).  Must stay <= 1024 bytes.
 |
 | Entered by the OS strap with A6 = ExecBase, A1 = trackdisk IOStdReq (open, DF0:).
 | 0. CPU check: 68040/68060 are refused (cyan screen) - the cache handling below is the 68020/68030 one.
@@ -22,7 +22,7 @@
 entry:                          | offset 12
     bra.s   start
     .word   0
-    .long   0x5A4B4C44          | offset 16: marker 'ZKLD' (checked by mkdisk.py)
+    .long   0x4C4C4241          | offset 16: marker 'LLBA' (checked by mkdisk.py)
 payload_len:
     .long   0                   | offset 20: patched
 
