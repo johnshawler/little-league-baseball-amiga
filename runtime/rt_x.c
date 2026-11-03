@@ -8,6 +8,7 @@ XCtx xrt_ctx;
 extern uint32_t tab_win0[], tab_win1[], tab_win2[], tab_win3[], tab_win4[], tab_win5[], tab_win6[], tab_fix[];
 extern void rt_unk_ent(void);
 void ppu_sync_rt(uint64_t dots);
+void rt_nmi_check(void);
 static uint8_t nztab[16]={0,0,0,0,2,0,0,0,0x80,0,0,0,0x82,0,0,0};
 static uint32_t *wintabs[7]={tab_win0,tab_win1,tab_win2,tab_win3,tab_win4,tab_win5,tab_win6};
 
@@ -44,7 +45,7 @@ uint32_t xrt_rd_c(uint32_t addr, int32_t d5, int32_t adj){
 }
 int32_t xrt_wr_c(uint32_t addr, uint32_t val, int32_t d5, int32_t adj){
     uint64_t c=rt.limit-(int64_t)d5+adj; uint16_t a=(uint16_t)addr;
-    if(getenv("XDBG")&&c>176200&&c<176400) fprintf(stderr,"wr %04x c=%llu limit=%llu d5=%d adj=%d\n",a,(unsigned long long)c,(unsigned long long)rt.limit,d5,adj);
+    if(0) fprintf(stderr,"wr %04x c=%llu limit=%llu d5=%d adj=%d\n",a,(unsigned long long)c,(unsigned long long)rt.limit,d5,adj);
     if(a>=0x2000) trace_c('W',a,(uint8_t)val,c);
     rt_io_wr(a,(uint8_t)val,c);
     if(a>=0x8000) load_mapper_ptrs();
@@ -64,8 +65,9 @@ int32_t xrt_slow_c(int32_t pc_in){
         cpu->a=(uint8_t)c->d[0]; cpu->x=(uint8_t)c->d[1]; cpu->y=(uint8_t)c->d[2]; cpu->s=(uint8_t)c->d[3];
         cpu->p=(uint8_t)((c->nzc&0x82)|((c->d[4]&0xFF)?1:0)|(c->vflag&0x40)|(c->misc&0x0C)|0x20); cpu->pc=(uint16_t)pc_in;
         rt.cyc=rt.limit-(int64_t)(int32_t)c->d[5];
+        rt_nmi_check();
     }
-    int steps=0; int dbg=getenv("XDBG")&&rt.cyc>176200&&rt.cyc<176400; if(dbg) fprintf(stderr,"slow in pc=%d cyc=%llu limit=%llu d5=%d\n",pc_in,(unsigned long long)rt.cyc,(unsigned long long)rt.limit,(int)c->d[5]);
+    int steps=0; static uint64_t dlo=0,dhi=0; if(!dhi&&getenv("XDBGLO")){ dlo=strtoull(getenv("XDBGLO"),0,10); dhi=strtoull(getenv("XDBGHI"),0,10); } int dbg=dhi&&rt.cyc>dlo&&rt.cyc<dhi; if(dbg) fprintf(stderr,"slow in pc=%d cyc=%llu limit=%llu d5=%d\n",pc_in,(unsigned long long)rt.cyc,(unsigned long long)rt.limit,(int)c->d[5]);
     for(;;){
         if(dbg) fprintf(stderr,"  step pc=%04x cyc=%llu\n",cpu->pc,(unsigned long long)rt.cyc);
         if(rt_step()<0){ fprintf(stderr,"illegal opcode at %04x\n",cpu->pc); exit(3); }

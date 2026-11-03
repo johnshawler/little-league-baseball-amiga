@@ -120,3 +120,10 @@ int rt_step(void){
     return 0;
 }
 void rt_run_interp(long frames){ while(rt.frames_done<frames){ if(rt_step()<0) return; } }
+
+/* NMI check at the end of the last completed instruction (used when the translated code hands over to the slow path: the instruction that
+ * just finished in translated code may have been the one after which the NMI has to be taken) */
+void rt_nmi_check(void){
+    uint64_t L=rt.cyc; rt_sync(3*(L-1)+5); nmi_advance(L-1);
+    if(rt.need_cycle!=RT_NEVER && rt.need_cycle<=L-1){ rt.need_cycle=RT_NEVER; cpu_nmi(&rt.cpu); }
+}
