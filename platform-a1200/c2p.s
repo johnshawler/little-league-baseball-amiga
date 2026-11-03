@@ -6,6 +6,11 @@
 |                                  converted pairs are copied to the shadow.  Returns the number of converted pairs.
 |   c2p_frame_all(src, dst)        the same without comparison (whole frame)
 | C ABI: arguments on the stack, d2-d7 / a2-a6 preserved.
+	.ifdef P5
+	.equ STRIDE,160
+	.else
+	.equ STRIDE,256
+	.endif
 	.text
 	.even
 	.globl c2p_pair, c2p_frame, c2p_uni_words
@@ -31,9 +36,11 @@
 	move.w (%a3)+,64(%a1)
 	move.w (%a3)+,96(%a1)
 	move.w (%a3)+,128(%a1)
+	.ifndef P5
 	move.w (%a3)+,160(%a1)
 	move.w (%a3)+,192(%a1)
 	move.w (%a3)+,224(%a1)
+	.endif
 	rts
 .Lkern:
 	move.l 12(%a0),%d0
@@ -110,14 +117,16 @@
 	swap %d0
 	move.w %d0,128(%a1)
 	move.w %d1,64(%a1)
+	move.w %d2,32(%a1)
+	move.w %d3,96(%a1)
+	.ifndef P5
 	swap %d1
 	move.w %d1,192(%a1)
-	move.w %d2,32(%a1)
 	swap %d2
 	move.w %d2,160(%a1)
-	move.w %d3,96(%a1)
 	swap %d3
 	move.w %d3,224(%a1)
+	.endif
 	rts
 
 c2p_pair:
@@ -142,7 +151,7 @@ c2p_frame:
 	jbne .Ldo
 	lea 256(%a0),%a0
 	lea 256(%a2),%a2
-	lea 256(%a1),%a1
+	lea STRIDE(%a1),%a1
 	dbra %d7,.Lrow
 	jbra .Lfin
 .Ldo:
@@ -166,7 +175,7 @@ c2p_frame:
 	lea 16(%a2),%a2
 	addq.l #2,%a1
 	dbra %d6,.Lp
-	lea 224(%a1),%a1			| next line: stride 256, 32 bytes advanced
+	lea STRIDE-32(%a1),%a1			| next line: stride 256, 32 bytes advanced
 	dbra %d7,.Lrow
 .Lfin:
 	move.l %d5,%d0
@@ -195,7 +204,7 @@ c2p_frame_all:
 	lea 16(%a0),%a0
 	addq.l #2,%a1
 	dbra %d6,.Lp2
-	lea 224(%a1),%a1
+	lea STRIDE-32(%a1),%a1
 	dbra %d7,.Lrow2
 	movem.l (%sp)+,%d2-%d7/%a2-%a3
 	rts

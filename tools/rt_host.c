@@ -30,7 +30,14 @@ static void pcm_frame(void){
 }
 static long drawpat;   /* DRAWPAT=n: only every n-th frame is drawn (nes.ppu.draw), to test the state-only rendering */
 static long oamdump=-1;   /* OAMDUMP=f : print OAM and PPU registers after frame f */
-static void frame(long f){ if(f==oamdump){ Ppu*p=&nes.ppu; fprintf(stderr,"frame %ld ctrl %02x mask %02x fx %d\n",f,p->ctrl,p->mask,p->fx); for(int i=0;i<64;i++) fprintf(stderr,"%d:%02x,%02x,%02x,%02x ",i,p->oam[i*4],p->oam[i*4+1],p->oam[i*4+2],p->oam[i*4+3]); fprintf(stderr,"\n"); } if(drawpat) nes.ppu.draw=((f+1)%drawpat==0); if(pcmf) pcm_frame(); if(fbf){ if(nfbsel){ int ok=0; for(int i=0;i<nfbsel;i++) if(fbsel[i]==f) ok=1; if(!ok) return; } static uint8_t buf[240*256*2]; for(int i=0;i<240*256;i++){ buf[2*i]=(uint8_t)nes.ppu.fb[i]; buf[2*i+1]=(uint8_t)(nes.ppu.fb[i]>>8); }
+static long palvar_frames;
+static void frame(long f){ if(nes.ppu.palvar){ palvar_frames++; if(getenv("PALVARLIST")) fprintf(stderr,"palvar frame %ld\n",f); nes.ppu.palvar=0; } if(f==oamdump){ Ppu*p=&nes.ppu; fprintf(stderr,"frame %ld ctrl %02x mask %02x fx %d\n",f,p->ctrl,p->mask,p->fx); for(int i=0;i<64;i++) fprintf(stderr,"%d:%02x,%02x,%02x,%02x ",i,p->oam[i*4],p->oam[i*4+1],p->oam[i*4+2],p->oam[i*4+3]); fprintf(stderr,"\npal:"); for(int i=0;i<32;i++) fprintf(stderr," %02x",p->pal[i]); fprintf(stderr,"\nfb[row][149..160]:"); for(int r=0;r<240;r++) { int any=0; for(int i=0;i<12;i++) if(p->fb[r*256+149+i]!=p->fb[(r?r-1:0)*256+149+i]) any=1; if(any||r==105){ fprintf(stderr,"\n r%d:",r); for(int i=0;i<12;i++) fprintf(stderr," %02x",(unsigned)p->fb[r*256+149+i]); } } fprintf(stderr,"\n"); } if(drawpat) nes.ppu.draw=((f+1)%drawpat==0); if(pcmf) pcm_frame(); if(fbf){ if(nfbsel){ int ok=0; for(int i=0;i<nfbsel;i++) if(fbsel[i]==f) ok=1; if(!ok) return; } static uint8_t buf[240*256*2]; for(int i=0;i<240*256;i++){
+#ifdef PPU_FB5     /* palette index framebuffer: apply the palette / emphasis / gray state at the end of the frame (what the Amiga build does) */
+        unsigned v=(nes.ppu.pal[nes.ppu.fb[i]&31]&(nes.ppu.gray?0x30:0x3F))|(nes.ppu.emph<<6); buf[2*i]=(uint8_t)v; buf[2*i+1]=(uint8_t)(v>>8);
+#else
+        buf[2*i]=(uint8_t)nes.ppu.fb[i]; buf[2*i+1]=(uint8_t)(nes.ppu.fb[i]>>8);
+#endif
+    }
     uint8_t h[8]; for(int i=0;i<8;i++) h[i]=(uint8_t)((uint64_t)f>>(8*i)); fwrite(h,1,8,fbf); fwrite(buf,1,sizeof buf,fbf); } }
 int main(int argc,char**argv){
     FILE*f=fopen(argv[1],"rb"); fseek(f,0,SEEK_END); long sz=ftell(f); rewind(f); uint8_t*d=malloc(sz); if(fread(d,1,sz,f)!=(size_t)sz) return 1; fclose(f);
@@ -39,12 +46,13 @@ int main(int argc,char**argv){
     if(getenv("OAMDUMP")) oamdump=atol(getenv("OAMDUMP"));
     if(getenv("DRAWPAT")) drawpat=atol(getenv("DRAWPAT"));
     if(getenv("PCMOUT")){ pcmf=fopen(getenv("PCMOUT"),"wb"); const char*s=getenv("PCMSTD"); int pal=!s||s[0]=='p'; aw_init(&aw,pal?11803:11912,pal?21423809u:7815439u,39375000u,124); }
-    extern int rt_fast_ppu; if(getenv("RT_NOFAST")) rt_fast_ppu=0;
+    extern int rt_fast_ppu; if(getenv("RT_NOFAST")||getenv("PPU_REF")) rt_fast_ppu=0;
+    extern int rt_ppu_check; extern long rt_chk_n; if(getenv("PPU_CHECK")) rt_ppu_check=1;   /* PPU_CHECK=1: compare the fast PPU model with the per-dot model at every access and frame end */
     rt_init(d+16,d+16+131072); rt.input_hook=input; rt.frame_hook=frame; if(trc||cmpf) rt.trace_hook=trace;
 #ifdef XRT
     { extern void xrt_run(long); xrt_run(nf); }
 #else
     rt_run_interp(nf);
 #endif
-     if(cmpf) fprintf(stderr,"IDENTICAL to the reference trace over %ld records\n",cmpn); { extern long ppu_fast_lines; fprintf(stderr,"fast lines %ld\n",ppu_fast_lines); } fprintf(stderr,"done: %ld frames, %llu cycles\n",rt.frames_done,(unsigned long long)rt.cyc); return 0;
+     if(cmpf) fprintf(stderr,"IDENTICAL to the reference trace over %ld records\n",cmpn); { extern long ppu_fast_lines, ppu_exotic; if(rt_ppu_check) fprintf(stderr,"PPU_CHECK: %ld comparisons passed, %ld exotic situations\n",rt_chk_n,ppu_exotic); fprintf(stderr,"frames with a palette/emphasis change during visible lines: %ld\n",palvar_frames); fprintf(stderr,"fast lines %ld\n",ppu_fast_lines); } fprintf(stderr,"done: %ld frames, %llu cycles\n",rt.frames_done,(unsigned long long)rt.cyc); return 0;
 }

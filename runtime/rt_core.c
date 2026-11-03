@@ -6,6 +6,11 @@
 #include "rt.h"
 Rt rt;
 Apu rt_apu;
+#ifdef AMIGA
+#define RT_CHK 0
+#else
+#define RT_CHK rt_ppu_check
+#endif
 #ifndef RT_AUDIO
 #define RT_AUDIO 0     /* 1: simulate the channel sequencers and queue audio events (the audio consumer must then call apu_render*() regularly) */
 #endif
@@ -35,17 +40,41 @@ void nes_input_poll(void){
     nes.joy[0]=b0; nes.joy[1]=b1;
 }
 
-uint64_t ppu_skip_vbl(Nes*n, uint64_t dots);
-int rt_fast_ppu=1;     /* use the line renderer for whole idle visible lines (identical results; set 0 to force the per-dot model) */
+void ppu_fp_run(Nes*n, uint64_t dots);
+int rt_fast_ppu=1;     /* 1: closed-form PPU model (ppu_fp_run); 0: the per-dot reference model alone (host: RT_NOFAST=1) */
+#ifndef AMIGA
+/* host self-check (PPU_CHECK=1): a second PPU instance runs the per-dot reference model; both are compared at every synchronisation, register access and
+ * frame end (state, flags, OAM, palette, name tables, and the frame buffer of drawn frames) */
+#include <stdio.h>
+#include <stdlib.h>
+extern int ppu_noinput;
+Nes nes_ref; int rt_ppu_check; long rt_chk_n;
+static void chk_fail(const char*what,const char*field,long a,long b){
+    Ppu*p=&nes.ppu; fprintf(stderr,"PPU_CHECK FAIL (%s): %s fast=%ld ref=%ld at frame %u line %d cx %d dots %llu cyc %llu (check #%ld)\n",what,field,a,b,p->frame,p->line,p->cx,(unsigned long long)p->dots,(unsigned long long)rt.cyc,rt_chk_n); exit(4);
+}
+#define CK(f) do{ if((long)p->f!=(long)q->f) chk_fail(what,#f,(long)p->f,(long)q->f); }while(0)
+static void chk_cmp(const char*what,int fbcmp){
+    Ppu*p=&nes.ppu,*q=&nes_ref.ppu; rt_chk_n++;
+    CK(dots); CK(line); CK(cx); CK(frame); CK(ctrl); CK(mask); CK(vbl); CK(sp0hit); CK(spovf); CK(v); CK(t); CK(fx); CK(w); CK(rdbuf); CK(openbus); CK(nmi_level);
+    CK(prevent_vbl); CK(rend); CK(rend_prev); CK(need_update); CK(upd_delay); if(p->upd_delay) CK(upd_addr); CK(frame_done);
+    if(!(p->rend && p->line>=0 && p->line<240 && p->cx>=65 && p->cx<=256)) CK(oamaddr);
+    if(memcmp(p->pal,q->pal,32)) chk_fail(what,"pal",0,1);
+    if(memcmp(p->nt,q->nt,2048)) chk_fail(what,"nt",0,1);
+    if(memcmp(p->oam,q->oam,256)) chk_fail(what,"oam",0,1);
+    if(fbcmp && p->draw){ int nd=0; for(int i=0;i<240*256;i++) if(p->fb[i]!=q->fb[i]){ if(nd<12) fprintf(stderr,"PPU_CHECK FAIL (%s): framebuffer differs at row %d x %d: fast=%02x ref=%02x (frame %u) ctrl %02x mask %02x fx %d\n",what,i>>8,i&255,(unsigned)p->fb[i],(unsigned)q->fb[i],p->frame,p->ctrl,p->mask,p->fx); nd++; } if(nd){ fprintf(stderr,"%d pixels differ\n",nd); exit(4); } }
+}
+static void chk_advance(uint64_t to){
+    Ppu*q=&nes_ref.ppu; q->draw=nes.ppu.draw; ppu_noinput=1; while(q->dots<to) ppu_step(&nes_ref); ppu_noinput=0;
+}
+#endif
 static void rt_sync(uint64_t dots){
     Ppu*p=&nes.ppu;
     while(p->dots<dots){
-        if(rt_fast_ppu && p->cx==340 && p->line>=-1 && p->line<=238 && dots-p->dots>=341){
-            int m=(int)((uint32_t)(dots-p->dots)/341); if(m>239-p->line) m=239-p->line;
-            ppu_sync_fast(&nes,p->dots+341ull*m); continue;
-        }
-        if(rt_fast_ppu && p->cx==340 && p->line>=241 && dots-p->dots>=341 && ppu_skip_vbl(&nes,dots)) continue;
-        uint8_t before=p->nmi_level; ppu_step(&nes);
+        uint8_t before=p->nmi_level;
+        if(rt_fast_ppu) ppu_fp_run(&nes,dots); else ppu_step(&nes);
+#ifndef AMIGA
+        if(rt_ppu_check){ chk_advance(p->dots); chk_cmp("sync",p->frame_done); nes_ref.ppu.frame_done=0; }
+#endif
         if(p->nmi_level!=before) q_push(sample_cycle_for_dots(p->dots), 2*p->dots, p->nmi_level);
         if(p->frame_done){ p->frame_done=0; rt.frames_done++; if(rt.frame_hook) rt.frame_hook(rt.frames_done-1); }
     }
@@ -54,11 +83,17 @@ void ppu_sync_rt(uint64_t dots){ rt_sync(dots); }
 
 static uint8_t ppu_rd(uint16_t a, uint64_t c){
     rt_sync(3*c+4); uint8_t before=nes.ppu.nmi_level; uint8_t v=ppu_reg_read(&nes,a);
+#ifndef AMIGA
+    if(rt_ppu_check){ uint8_t v2=ppu_reg_read(&nes_ref,a); if(v!=v2) chk_fail("read",a==0x2002?"$2002":"$200x value",v,v2); chk_cmp("read",0); }
+#endif
     if(nes.ppu.nmi_level!=before) q_push(c, 2*(3*c+4)+1, nes.ppu.nmi_level);
     return v;
 }
 static void ppu_wr(uint16_t a, uint8_t v, uint64_t c){
     rt_sync(3*c+4); uint8_t before=nes.ppu.nmi_level; ppu_reg_write(&nes,a,v);
+#ifndef AMIGA
+    if(rt_ppu_check){ ppu_reg_write(&nes_ref,a,v); chk_cmp("write",0); }
+#endif
     if(nes.ppu.nmi_level!=before) q_push(c, 2*(3*c+4)+1, nes.ppu.nmi_level);
 }
 
@@ -78,7 +113,13 @@ static void mem_write(uint16_t a, uint8_t v, uint64_t c){
     else if(a==0x4014){ rt.need_halt=1; rt.dma_on=1; rt.dma_page=v; }
     else if(a==0x4016){ int s=v&1; if(nes.strobe && !s){ nes.joy_shift[0]=nes.joy[0]; nes.joy_shift[1]=nes.joy[1]; } nes.strobe=s; }
     else if(a<0x4018) apu_write(&rt_apu,a,v,c);   /* $4000-$4013, $4015, $4017 (4014/4016 handled above) */
-    else if(a>=0x8000) mmc1_write(&nes.map,a,v);
+    else if(a>=0x8000){
+        if(mmc1_write_ppu_effect(&nes.map,a,v)) rt_sync(3*c+4);      /* the write changes what the PPU fetches: the PPU must be at this dot first */
+        mmc1_write(&nes.map,a,v);
+#ifndef AMIGA
+        if(rt_ppu_check) mmc1_write(&nes_ref.map,a,v);
+#endif
+    }
 }
 uint8_t rt_io_rd(uint16_t a, uint64_t c){ uint8_t v=mem_read(a,c); rt.openbus=v; return v; }
 void    rt_io_wr(uint16_t a, uint8_t v, uint64_t c){ mem_write(a,v,c); rt.openbus=v; }
@@ -97,7 +138,7 @@ static void process_dma(uint16_t read_addr){
             if(fast<0){   /* after the first synchronised write: block mode if every remaining write stores into OAM and nothing else can observe the PPU in between:
                            * source in RAM (no read side effects), no trace, and rendering off, or the whole rest of the transfer inside vertical blank */
                 Ppu*p=&nes.ppu; int rem=(0x200-counter)*3+6;
-                fast = (!rt.trace_hook && rt.dma_page<0x20 && !p->need_update && !p->upd_delay &&
+                fast = (!rt.trace_hook && !RT_CHK && rt.dma_page<0x20 && !p->need_update && !p->upd_delay &&
                         (!p->rend || (p->line>=240 && (p->line-240)*341+p->cx+rem < 21*341))) ? 1 : 0;
             }
         }
@@ -125,6 +166,10 @@ void rt_init(const uint8_t *prg, const uint8_t *chr){
     memset(&nes,0,sizeof nes); nes.map.prg=prg; nes.map.chr=chr;
     ppu_reset(&nes.ppu); mmc1_reset(&nes.map); cpu_reset(&rt.cpu);
     apu_reset(&rt_apu); apu_set_audio(&rt_apu,RT_AUDIO);
+#ifndef AMIGA
+    if(rt_ppu_check){ memset(&nes_ref,0,sizeof nes_ref); nes_ref.map=nes.map; ppu_reset(&nes_ref.ppu); }
+#endif
+    nes.ppu.fp=rt_fast_ppu; nes.ppu.oa_line=-2;
     rt_sync(26); rt.cyc=7;
     rt.cpu.pc=(uint16_t)(prg[7*16384+0x3FFC]|prg[7*16384+0x3FFD]<<8);
 }

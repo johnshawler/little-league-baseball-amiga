@@ -18,3 +18,9 @@ void mmc1_write(Mapper *m, uint16_t addr, uint8_t v){
     m->shift=(uint8_t)((m->shift>>1)|((v&1)<<4)); m->count++;
     if(m->count==5){ m->reg[(addr>>13)&3]=m->shift; m->shift=0; m->count=0; update(m); }
 }
+/* 1 if the write changes what the PPU sees (CHR banks or mirroring): the board synchronises the PPU before applying it */
+int mmc1_write_ppu_effect(const Mapper *m, uint16_t addr, uint8_t v){
+    if((v&0x80) || m->count!=4) return 0;
+    Mapper t=*m; mmc1_write(&t,addr,v);
+    return t.chr_lo!=m->chr_lo || t.chr_hi!=m->chr_hi || t.mirror!=m->mirror;
+}

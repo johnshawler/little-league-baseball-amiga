@@ -84,7 +84,11 @@ static void on_frame(long f)
     /* 2. picture: frames decided as "not displayed" before they started (nes.ppu.draw = 0: the PPU computes only state effects, no pixels) are skipped; while behind
      * real time at most DISPLAY_SKIP_MAX frames in a row are not drawn */
     int drawn = nes.ppu.draw;
-    if (!drawn) { skip_run++; st_dskip++; }
+    int pv = nes.ppu.palvar; nes.ppu.palvar = 0;        /* palette/emphasis changed while the picture was drawn (about 1 frame in 1000: screen transitions) */
+#ifndef PPU_FB5
+    pv = 0;
+#endif
+    if (!drawn || pv) { skip_run++; st_dskip++; }
     else {
         skip_run = 0; t0 = plat_eclock();
         if (display_frame(nes.ppu.fb, nes.ppu.rowdirty)) st_dconv++;

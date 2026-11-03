@@ -16,10 +16,15 @@
 
 #define PLAT_W            256
 #define PLAT_H            240
+#ifdef PPU_FB5
+#define PLAT_DEPTH        5                        /* 5 planes = 32 colours = the NES palette RAM */
+#define PLAT_STRIDE       160                      /* bytes per line (all 5 planes interleaved) */
+#else
 #define PLAT_DEPTH        8
 #define PLAT_STRIDE       256                      /* bytes per line (all 8 planes interleaved) */
+#endif
 #define PLAT_PLANE_STRIDE 32                       /* bytes between the planes of one line */
-#define PLAT_BUF_SIZE     (PLAT_STRIDE * PLAT_H)   /* 61440 */
+#define PLAT_BUF_SIZE     (PLAT_STRIDE * PLAT_H)   /* 61440 (8 planes) / 38400 (5 planes) */
 
 #ifndef PLAT_PAL_VSTART
 #define PLAT_PAL_VSTART   52      /* first display line, PAL  (VPOS) */
@@ -69,6 +74,8 @@ void plat_init(void);       /* called by crt0 once; sets up everything; enables 
 extern uint8_t plat_buf[2][PLAT_BUF_SIZE];  /* the two display buffers (chip RAM) */
 void plat_show(unsigned buf);               /* display buffer 0/1 from the next vertical blank on */
 int  plat_show_pending(void);               /* a plat_show() has not been applied by the vertical-blank interrupt yet */
+void plat_set_palette32(const uint32_t rgb[32]);     /* colour registers 0..31 (0x00RRGGBB), loaded by the next vertical-blank interrupt together with the buffer flip
+                                                        (loads nothing if unchanged) */
 void plat_set_palette256(const uint32_t rgb[256]);   /* 0x00RRGGBB, loaded by the next vertical blank */
 void plat_set_color(unsigned idx, uint16_t rgb);     /* RGB444, colour register idx (< 32), immediate (error screens) */
 void plat_wait_vbl(void);

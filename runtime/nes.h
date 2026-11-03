@@ -16,15 +16,26 @@ typedef struct {
 } Mapper;
 void mmc1_reset(Mapper *m);
 void mmc1_write(Mapper *m, uint16_t addr, uint8_t v);   /* $8000-$FFFF */
+int  mmc1_write_ppu_effect(const Mapper *m, uint16_t addr, uint8_t v);   /* 1 if the write changes CHR banks / mirroring (PPU must be synchronised first) */
 
 /* ---------------------------------------------------------------- PPU */
-#ifdef PPU_FB8
+#if defined(PPU_FB5)
+#define FBVAL(c,e) ((uint8_t)(c))      /* Amiga 5-plane build: the framebuffer holds the palette RAM index (0..31); colours/emphasis/gray are applied to the 32 colour registers by the platform */
+#elif defined(PPU_FB8)
 #define FBVAL(c,e) ((uint8_t)((c)|(((e)&3)<<6)))
 #else
 #define FBVAL(c,e) ((uint16_t)((c)|((e)<<6)))
 #endif
 typedef struct { uint16_t addr; uint8_t paloff, lo, hi, offy; } Tile;
 typedef struct { uint8_t lo, hi, x, paloff, bgprio, hflip, vflip; } SpriteTile;
+/* fast PPU model (ppu_ref.c): fetch context of one output line (tile and sprite data fetched at their dots with the parameters in force then) */
+typedef struct {
+    int16_t  y;                       /* output line this context belongs to, -1: none */
+    uint8_t  jlo, jhi;                /* tiles j (0..32) that are tracked */
+    uint8_t  mode, nspr, s0;          /* mode 1: sprite 0 only (hit test), 2: complete line; sprites on the line (0..8); slot 0 is sprite 0 */
+    uint8_t  tlo[34], thi[34], tpal[34]; uint16_t tta[34];
+    uint8_t  spx[8], slo[8], shi[8], spal[8], sprio[8], shf[8];
+} FpCtx;
 typedef struct {
     /* registers */
     uint8_t  ctrl, mask, oamaddr;
@@ -48,12 +59,21 @@ typedef struct {
     SpriteTile st[8]; uint8_t has_sprite[264];
     int      sp_count, sp_index, s0_visible, s0_added, sp_inrange, copy_done, ovf_bug;
     uint8_t  oamcopy, sec_addr, addrH, addrL;
-#ifdef PPU_FB8
+#if defined(PPU_FB8) || defined(PPU_FB5)
     uint8_t  fb[240*256];             /* Amiga build: NES colour (6 bit) | (red,green emphasis)<<6; blue emphasis is not displayed */
 #else
     uint16_t fb[240*256];             /* colour per pixel: NES colour (6 bit) | emphasis<<6 (| gray applied) */
 #endif
+    uint8_t  rowok[240]; uint32_t rowsig[240];   /* signature of the inputs of the row now in the framebuffer (renderer: rows with unchanged inputs are not drawn again) */
+    FpCtx    fc[2]; int fcur;                     /* fast model: fetch contexts of the line being output (fc[fcur]) and of the next line */
+    uint8_t  lt_cnt[240];             /* fast model: sprites in range per evaluation line (saturated at 255) */
+    uint8_t  lt_idx[240][8];          /* first 8 sprites (OAM index) in range per evaluation line (valid when lt_full) */
+    int16_t  lt_ocx[240];             /* dot (cx) at which the sprite overflow flag is set on this evaluation line: 0 none, -1 not computed yet */
+    int      fp;                      /* this instance is driven by the fast model (the OAM address during sprite evaluation is then computed on demand) */
+    int16_t  oa_line; uint8_t oa_start;
+    int      lt_valid, lt_full, lt_large;  /* tables above built for the current OAM / sprite size (oam_dirty clears lt_valid) */
     uint8_t  rowdirty[240];           /* rows written to fb since the platform last cleared the flag (display change tracking) */
+    int      palvar;                  /* palette RAM / emphasis / gray changed during visible lines (set by the PPU, cleared by the platform at the frame hook) */
     int      oam_dirty;               /* OAM written since the sprite coverage table of the state-only renderer was built */
     int      draw;                    /* 1: write the framebuffer (the picture will be displayed); 0: compute only the state effects (platform sets it per frame) */
     int      frame_done;

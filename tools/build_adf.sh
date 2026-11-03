@@ -17,7 +17,9 @@ ROOT=$(pwd); B=${BUILD:-amiga}; B=$ROOT/build/$B; mkdir -p "$B"
 P=$ROOT/platform-a1200; R=$ROOT/runtime
 PREFIX=${PREFIX:-m68k-linux-gnu-}
 CC=${PREFIX}gcc; AS="${PREFIX}as -m68020 --register-prefix-optional"; LD="${PREFIX}ld -z noexecstack --no-warn-rwx-segments"
-CFLAGS="-m68020 -ffreestanding -nostdlib -fno-pic -O2 -fomit-frame-pointer -fno-tree-loop-distribute-patterns -fno-delete-null-pointer-checks -Wall -Wno-unused -Wno-misleading-indentation $EXTRA -DAMIGA -DPPU_FB8 -DRT_AUDIO=1 -DAPU_Q_SQ=512 -DAPU_Q_TRI=4096 -DAPU_Q_NOI=8192"
+FBFLAG=${FBFLAG:--DPPU_FB5}     # -DPPU_FB5: 5 bitplanes, framebuffer = palette RAM index (default); -DPPU_FB8: 8 planes, framebuffer = NES colour | emphasis
+AS5=""; case "$FBFLAG" in *FB5*) AS5="-Wa,--defsym,P5=1";; esac
+CFLAGS="-m68020 -ffreestanding -nostdlib -fno-pic -O2 -fomit-frame-pointer -fno-tree-loop-distribute-patterns -fno-delete-null-pointer-checks -Wall -Wno-unused -Wno-misleading-indentation $EXTRA -DAMIGA $FBFLAG -DRT_AUDIO=1 -DAPU_Q_SQ=512 -DAPU_Q_TRI=4096 -DAPU_Q_NOI=8192"
 RTFLAGS="$CFLAGS -I$R"
 python3 - "$ROM" <<'PY'
 import sys
@@ -56,7 +58,7 @@ $AS $B/code.s -o $B/code.o; $AS $B/tabsp.s -o $B/tabsp.o; $AS $R/rt_x.s -o $B/rt
 for f in rt_core rt_x cpu6502 ppu_ref mapper_mmc1 apu; do $CC $RTFLAGS -c $R/$f.c -o $B/$f.o; done
 # 3. platform
 for f in main display audio platform telem libc tabs palette; do $CC $CFLAGS -I$P -I$B -I$R -c $P/$f.c -o $B/$f.o; done
-$CC -m68020 -x assembler -c $P/c2p.s -o $B/c2p.o; $CC -m68020 -x assembler -c $P/crt0.s -o $B/crt0.o
+$CC -m68020 $AS5 -x assembler -c $P/c2p.s -o $B/c2p.o; $CC -m68020 -x assembler -c $P/crt0.s -o $B/crt0.o
 $CC -m68020 -x assembler -c $P/isr.s -o $B/isr.o; $CC -m68020 -x assembler -c $P/rom.s -o $B/rom.o
 $CC -m68020 -x assembler -c $P/boot.s -o $B/boot_o.o
 $LD -e 0 -Ttext=0 --oformat=binary -o $B/boot.bin $B/boot_o.o

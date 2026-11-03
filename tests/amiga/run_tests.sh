@@ -39,6 +39,7 @@ for s in $STDS; do
   done; wait
   for fr in 100 300 400 1200 1600 3000 5000; do python3 tests/amiga/cmp_shot.py $W/sc_${s}_${fr}_g1_full.png $W/ref_scenes.fb $fr $s || true; done
 done
+[ "$ONLY" = scenes ] && exit 0
 echo "== keyboard path (pal)"
 cat > $W/kb.sh <<'EOS'
 tap() { xdotool keydown $1; sleep ${2:-0.25}; xdotool keyup $1; }

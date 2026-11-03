@@ -2,6 +2,9 @@
 #include <stdint.h>
 #include "platform.h"
 #include "display.h"
+#ifdef PPU_FB5
+#include "../runtime/nes.h"
+#endif
 
 extern const uint32_t nes_rgb[256];
 extern uint16_t c2p_uni_words[256][8];
@@ -19,13 +22,29 @@ static uint8_t rowflag[2][240];            /* per buffer: rows that changed sinc
 unsigned display_back(void) { return back; }
 void display_c2p_pair(const uint8_t *src, uint8_t *dst) { c2p_pair(src, dst); }
 
+#ifdef PPU_FB5
+/* 5 planes: the framebuffer holds palette RAM indices 0..31; the 32 colour registers are loaded from a palette snapshot (palette RAM, gray, emphasis) when a picture is shown.
+ * RGB = nes_rgb[(pal & (gray ? 0x30 : 0x3F)) | (red emphasis << 6) | (green emphasis << 7)] (blue emphasis is not displayed, as before). */
+static void apply_palette(void)
+{
+    uint32_t rgb[32]; const Ppu *p = &nes.ppu; unsigned gm = p->gray ? 0x30 : 0x3F, em = (p->emph & 3) << 6;
+    for (unsigned i = 0; i < 32; i++) rgb[i] = nes_rgb[(p->pal[i] & gm) | em];
+    plat_set_palette32(rgb);
+}
+#endif
+
 void display_init(void)
 {
     for (unsigned v = 0; v < 256; v++) for (unsigned p = 0; p < 8; p++) c2p_uni_words[v][p] = ((v >> p) & 1) ? 0xFFFF : 0;
+#ifdef PPU_FB5
+    apply_palette();
+#else
     plat_set_palette256(nes_rgb);
+#endif
     for (unsigned b = 0; b < 2; b++) {
         uint32_t *s = (uint32_t *)display_shadow[b], *d = (uint32_t *)plat_buf[b];
-        for (unsigned i = 0; i < 240 * 256 / 4; i++) { s[i] = 0; d[i] = 0; }        /* colour index 0 everywhere: planes all zero */
+        for (unsigned i = 0; i < 240 * 256 / 4; i++) s[i] = 0;
+        for (unsigned i = 0; i < PLAT_BUF_SIZE / 4; i++) d[i] = 0;        /* colour index 0 everywhere: planes all zero */
         force_all[b] = 0;
     }
     back = 1;
@@ -50,6 +69,9 @@ int display_frame(const uint8_t *fb, uint8_t *rowdirty)
     } else {
         display_pairs_last = (uint32_t)c2p_frame(fb, plat_buf[b], display_shadow[b], rowflag[b]);
     }
+#ifdef PPU_FB5
+    apply_palette();                              /* loaded by the vertical-blank interrupt that also flips the buffer */
+#endif
     plat_show(b);
     back = (uint8_t)(b ^ 1);
     return 1;

@@ -67,7 +67,12 @@
 /* AGA display programming (values proven in FS-UAE by the previous A1200 port): 32-bit bitplane fetch (FMODE 1) halves the DMA slots the
  * 8 planes take away from the CPU; DDFSTRT/STOP 0x40/0xB0 place a 256 pixel picture at DIWSTRT 0xA1. */
 #ifndef PLAT_PLANES
-#define PLAT_PLANES 8            /* bitplanes fetched (8 = 256 colours); fewer/0 only for the DMA contention measurements */
+#ifdef PPU_FB5
+#define PLAT_PLANES 5
+#else
+#define PLAT_PLANES 8
+#endif
+#define PLAT_PLANES_DEFAULT 1            /* bitplanes fetched (8 = 256 colours); fewer/0 only for the DMA contention measurements */
 #endif
 #ifndef PLAT_FMODE
 #define PLAT_FMODE 1
@@ -256,7 +261,11 @@ __attribute__((weak)) void plat_prof_pc(uint32_t pc) { (void)pc; }
 static void load_palette(void)
 {
     volatile uint16_t *col = (volatile uint16_t *)(0xDFF000u + COLOR00);
+#ifdef PPU_FB5
+    for (unsigned bank = 0; bank < 1; bank++) {
+#else
     for (unsigned bank = 0; bank < 8; bank++) {
+#endif
         const uint16_t *hi = &pal_hi[bank * 32], *lo = &pal_lo[bank * 32];
         R16(BPLCON3) = (uint16_t)(BPLCON3_BASE | (bank << 13));
         for (unsigned i = 0; i < 32; i++) col[i] = hi[i];
@@ -290,6 +299,19 @@ __attribute__((section(".text.idle"))) void plat_wait_ticks(uint32_t t)
     while ((int32_t)(plat_tick_count - t) < 0) __asm__ volatile("stop #0x2000" : : : "memory");
 }
 
+void plat_set_palette32(const uint32_t rgb[32])
+{
+    uint16_t sr = irq_lock_vbl();
+    unsigned changed = 0;
+    for (unsigned i = 0; i < 32; i++) {
+        uint32_t c = rgb[i], r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
+        uint16_t hi = (uint16_t)(((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4)), lo = (uint16_t)(((r & 15) << 8) | ((g & 15) << 4) | (b & 15));
+        if (hi != pal_hi[i] || lo != pal_lo[i]) { pal_hi[i] = hi; pal_lo[i] = lo; changed = 1; }
+    }
+    if (changed) pal_pending = 1;
+    irq_restore(sr);
+}
+
 void plat_set_palette256(const uint32_t rgb[256])
 {
     uint16_t sr = irq_lock_vbl();
@@ -310,7 +332,12 @@ void plat_set_color(unsigned idx, uint16_t rgb)    /* immediate, bank 0 only (er
 /* measurement builds (PLAT_PLANES < 8): switch the full 8-plane display on so that the telemetry page can be read from a screenshot */
 void plat_display_full(void)
 {
+#ifdef PPU_FB5
+    R16(BPLCON0) = 0x5201;
+#else
     R16(BPLCON0) = 0x0211;
+#endif
+    R16(FMODE) = 0x0001; R16(DDFSTRT) = 0x0040; R16(DDFSTOP) = 0x00B0;
     R16(DMACON) = SETBIT | DMAEN | BPLEN;
 }
 

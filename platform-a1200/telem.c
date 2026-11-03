@@ -14,7 +14,7 @@ void telem_draw(uint8_t *buf, const uint32_t *w, unsigned nwords, unsigned line)
             uint8_t b = (uint8_t)(v >> (24 - 8 * k));
             for (unsigned l = 0; l < 2; l++) {
                 uint8_t *d = buf + (line + row * 2 + l) * PLAT_STRIDE + col + k;
-                for (unsigned p = 0; p < 8; p++) d[p * PLAT_PLANE_STRIDE] = b;
+                for (unsigned p = 0; p < PLAT_DEPTH; p++) d[p * PLAT_PLANE_STRIDE] = b;
             }
         }
     }
