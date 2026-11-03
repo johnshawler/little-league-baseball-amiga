@@ -254,3 +254,30 @@ Per NES frame at the real A1200 timing (stock chip RAM, 256-byte I-cache only, 8
 * Audio: one DC step at the start of playback; no high-pass; channels 2/3 unused (see section 7).
 * The two Mesen output pixels that differ from the generated palette (section 5) are unexplained.
 * The functional tests run with a host-speed CPU (not A1200 timing); all of them were run on PAL and the scene and audio tests also on NTSC (`run_tests.sh both`: 14 of 14 scenes pixel-exact).
+
+## 12. Round 2: speed work (measured, real A1200 timing in FS-UAE)
+
+Changes (all verified identical to the reference): 6000-frame host trace IDENTICAL (2,556,952 records) with all frames drawn and with only every 3rd / 5th frame drawn (`DRAWPAT`); all 6000 framebuffers
+equal the previous renderer's (`tests/amiga` / FIFO comparison, 0 differing frames); reference PCM bit-identical; 14 of 14 scene screenshots (PAL+NTSC) pixel-exact; real-speed screenshots of the field scene
+(drawn-frames-only path) equal reference frames 2052, 2080, 2108 (0 differing pixels outside the telemetry lines).
+
+1. `nes.ppu.draw` (set by `on_frame` for the *next* frame: 0 while behind real time, at most `DISPLAY_SKIP_MAX` = 3 frames in a row): lines are not rendered, only their state effects are computed (sprite overflow, sprite-0 hit by the
+   existing analytic `line_hit_cx`, from a per-line sprite coverage table rebuilt only after OAM writes). Vertical-blank lines 242..260 are skipped analytically (`ppu_skip_vbl`).
+   Drawn lines: tile fetch through direct pointers, 4 pixels per long, sprites laid over the line once, and a 32-bit *signature of the line's inputs*: a line whose signature equals that of the line already in the framebuffer is not
+   rendered again and is not marked changed (`nes.ppu.rowdirty`).
+2. `rt_div3` replaces the 64-bit `/3` (libgcc) in the cycle/dot conversions, `/341` is 32-bit; OAM DMA from RAM runs as a block (cycle count identical: 148,929,788 cycles in 5001 frames before and after) when every write stores into OAM.
+3. `apu_render`: next-event times of the four queues cached (bit-identical PCM). Not the 10x asked for (see below).
+4. Display: `c2p_frame` converts only rows the renderer marked (per-buffer row flags) and, inside them, the 16-pixel groups that differ from the shadow; no full-frame compare any more (38 ms -> 0.6 to 20 ms).
+
+| ms per NES frame | menu before | after | line-up before | after | field before | after |
+|---|---|---|---|---|---|---|
+| translated 6502 code (incl. translator changes of the coordinator) | 18.9 | 4.1 | 35.6 | 11.5 | 26.8 | 25.1 |
+| rt_x.s + rt_x.c + cpu6502/mapper | 19.2 | 17.1 | 69.1 | 46.1 | 98.4 | 81.7 |
+| rt_core (sync, PPU registers, NMI) | 317 | 98 | 796 | 309 | 336 | 144 |
+| ppu_ref | 2469 | 341 | 3327 | 818 | 2753 | 535 |
+| APU | 64.0 | 40.2 | 46.5 | 25.9 | 39.1 | 23.8 |
+| display (c2p) | 12.4 | 0.6 | 22.8 | 6.9 | 29.9 | 20.0 |
+| total | 2905 | 515 | 4310 | 1220 | 3283 | 831 |
+| **speed** | 0.60 % | **3.3 %** | 0.48 % | **1.4 %** | 0.53 % | **2.0 %** |
+
+Remaining PPU cost is mostly the per-dot model that runs when a register access (`$2002` polls: 197 per frame in the line-up screen, `$2004`, `$2005-7`) lands inside a visible line, and `render_line_fast` on drawn frames.
