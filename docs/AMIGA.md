@@ -149,17 +149,17 @@ is frame driven, so the results do not depend on the speed). Speed and profile m
 FS-UAE native full-frame screenshot (F12+S, 1 lores pixel = 2 x 2 screenshot pixels, picture window at (138, 52) PAL / (138, 0) NTSC), compared with `FBDUMP` frames of the reference runtime
 (`tests/amiga/cmp_shot.py`; expected RGB = `nes_rgb[value & 0xFF]`). Build with `-DSTOP_AT=N` (frame N shown, game stopped), input from `tools/discovery/inputs/play_watchgame.txt` compiled in.
 
-| frame | scene | PAL differing pixels | NTSC |
+| frame | scene | PAL differing pixels | NTSC differing pixels |
 |---|---|---|---|
-| 100 | 50th anniversary logo | 0 of 61,440 | |
+| 100 | 50th anniversary logo | 0 of 61,440 | 0 |
 | 300 | title screen | 0 | 0 |
-| 400 | team selection map | 0 | |
-| 1200 | line-up list | 0 | |
-| 1600 | field, batting view (sprites, sprite-0 split) | 0 | |
-| 3000 | field, scrolling | 0 | |
-| 5000 | field | 0 | |
+| 400 | team selection map | 0 | 0 |
+| 1200 | line-up list | 0 | 0 |
+| 1600 | field, batting view (sprites, sprite-0 split) | 0 | 0 |
+| 3000 | field, scrolling | 0 | 0 |
+| 5000 | field | 0 | 0 |
 
-(Section 9a rows for NTSC other than 300 are in the `run_tests.sh` output of this session; see the final report.) PPU_FB8 against the 16-bit framebuffer: 6000 frames of the translated runtime, low byte identical in all frames
+(All 14 screenshots from one run of `tests/amiga/run_tests.sh`; the 2 x 2 pixel blocks of every screenshot are uniform, i.e. exactly 256 x 240 lores pixels.) PPU_FB8 against the 16-bit framebuffer: 6000 frames of the translated runtime, low byte identical in all frames
 (55 of them with emphasis bits set).
 
 ### 9b. Real keyboard / joystick path (xdotool into FS-UAE)
@@ -173,9 +173,9 @@ joystick port 1 (`joystick_port_0 = keyboard`): 0xFF for player 2 including the 
 
 `AUDIO_TEST` builds replay the 420 chunks (PAL: 199,898 samples, 237/238 words; NTSC: 201,738 samples, 240/241 words) that the runtime produced for the first 420 frames of the play script through `audio.c` at the game clock
 (no emulation); FS-UAE's output is recorded with the OpenAL-soft wave backend at Paula's rate (`audio_frequency = 28604` / `28867`, so no resampling) and compared with the reference PCM
-(`tests/amiga/audio_cmp.py`: aligned per 4096 samples, 3-tap smoothed). **420 of 420 chunks played, 0 underruns** during the replay on PAL and NTSC. PAL: median correlation 0.979 (5th percentile 0.943, min 0.919); NTSC: 0.934 (0.866, 0.850);
-drift of the recording against the nominal rate -7.6 ms (PAL) and -15.4 ms (NTSC) over 6.8 s, i.e. FS-UAE's Paula output clock is 0.11 % / 0.23 % off its own CIA clock (the old port saw +-10 ms over 4 s too); gain 109.8 / 104.7 per
-sample unit, silence -128 plays at -14344 / -13969. L and R differ by sub-sample interpolation (max |L-R| 5101 in 2554 of 203,088 samples), not by data (identical data on both channels).
+(`tests/amiga/audio_cmp.py`: aligned per 4096 samples, 3-tap smoothed). **420 of 420 chunks played, 0 underruns** during the replay on PAL and NTSC. PAL: median correlation 0.985 (5th percentile 0.948, min 0.928); NTSC: 0.938 (0.871, 0.838);
+drift of the recording against the nominal rate -5.7 ms (PAL) and -15.2 ms (NTSC) over 6.8 s, i.e. FS-UAE's Paula output clock is 0.08 % / 0.22 % off its own CIA clock (the old port saw +-10 ms over 4 s too); gain 111 / 105 per
+sample unit, silence -128 plays at -14433 / -13998. The NTSC correlation is lower because of the larger drift and FS-UAE's resampling of edges, not because of missing data (the chunk counters are exact). L and R differ by sub-sample interpolation (max |L-R| 5101 in 2554 of 203,088 samples), not by data (identical data on both channels).
 What this shows: the DMA double buffering, the interrupt chaining, the rate lock and the amplitude chain work; the stream is the runtime's PCM. What it does not show: sound from the *running game* at real speed (the game
 cannot reach real time, so there is no continuous game audio to record); in the speed runs below the audio interrupt delivers chunk after chunk with silence in between.
 
@@ -191,7 +191,7 @@ script), because reaching them from reset would take hours.
 | line-up list (1200) | 56 / 11,788 | **0.48 %** | 0.29 |
 | field, batting/fielding, busiest scene (2000) | 60 / 11,323 | **0.53 %** | 0.32 |
 
-Not measured: NTSC speed (the machine is CPU bound, the same code runs; only the 4 % clock difference). Speed from reset (the first 24 frames, game start) was 0.3-0.5 % (per-dot PPU stepping while the game waits for vertical blank).
+NTSC (field scene, snapshot 2000): 60 frames / 11,650 ticks = **0.52 %**, the same as PAL (the machine is CPU bound). Speed from reset (the first 24 frames, game start) was 0.3-0.5 % (per-dot PPU stepping while the game waits for vertical blank).
 FAST mode (host-speed emulation) is not an A1200 measurement; it ran the scripted 5000 frames in about 2.5 minutes.
 
 ### 9e. Where the time goes (profile at real A1200 timing)
@@ -249,8 +249,8 @@ Per NES frame at the real A1200 timing (stock chip RAM, 256-byte I-cache only, 8
 ## 11. Open problems / not verified
 
 * Real hardware (boot, AGA fetch timing, POTGO configuration of the second button, keyboard, floppy) and A1200 CPU timing beyond what FS-UAE models.
-* Speed: 0.4-0.6 %, see sections 9 and 10. NTSC speed not measured; the audio of the *running* game at real speed not recorded (only the replay of its PCM and the speed-run counters).
+* Speed: 0.4-0.6 %, see sections 9 and 10. The audio of the *running* game at real speed not recorded (only the replay of its PCM and the speed-run counters).
 * Blue emphasis not displayed; the NES left-8-pixel clipping, grey mode etc. are the runtime's (identical to the reference in all frames tested).
 * Audio: one DC step at the start of playback; no high-pass; channels 2/3 unused (see section 7).
 * The two Mesen output pixels that differ from the generated palette (section 5) are unexplained.
-* The functional tests run with a host-speed CPU; they were run on PAL for all scenes and on NTSC for the title (frame 300); `run_tests.sh both` repeats everything on both standards.
+* The functional tests run with a host-speed CPU (not A1200 timing); all of them were run on PAL and the scene and audio tests also on NTSC (`run_tests.sh both`: 14 of 14 scenes pixel-exact).

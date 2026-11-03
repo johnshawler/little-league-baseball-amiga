@@ -8,3 +8,4 @@
 *.adf
 build/
 __pycache__/
+.run_*.fs-uae

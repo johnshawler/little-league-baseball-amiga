@@ -10,7 +10,7 @@
 here=$(cd "$(dirname "$0")" && pwd)
 std=$1; out=$2; secs=${3:-15}; script=$4
 tmp=$(mktemp -d)
-cfg="$here/.run_$$.fs-uae"
+cfg="$tmp/run.fs-uae"
 : "${KICK:?set KICK=/path/to/kickstart.rom (test only - never part of the deliverables)}"
 ADF=${ADF:?set ADF=/path/to/llb.adf}
 sed -e "s|@KICK@|$KICK|" -e "s|@ADF@|$ADF|" -e "s|^\[end\]|screenshots_output_dir = $tmp\n[end]|" "$here/$std.fs-uae" > "$cfg"
