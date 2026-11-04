@@ -393,12 +393,12 @@ static void render_slow(Apu *a, uint64_t from, uint64_t to, void *out, unsigned 
     a->rsq=(uint8_t)sq; a->rtn=(uint8_t)tn;
 }
 
-static void render(Apu *a, uint64_t from, uint64_t to, void *out, unsigned n, int s8){
+static void render(Apu *a, uint64_t from, uint64_t to, void *out, unsigned n, int s8, int slow){
     uint64_t span;
     if(!n || to<=from) return;
     { PT0; apu_flush(a,to); PT1(apu_prof_flush); }
     span=to-from;
-    if(span>=0x10000u || n>=0x10000u || span/n<2){ render_slow(a,from,to,out,n,s8); }
+    if(slow || span>=0x10000u || n>=0x10000u || span/n<2){ render_slow(a,from,to,out,n,s8); }
     else {
         static uint32_t buf[MRG_CHUNK+1];
         uint32_t base=(uint32_t)from<<8, sp=(uint32_t)span, q=sp/n, r=sp%n, *qs[4]; Core z; unsigned c, cnt, done=0;
@@ -423,8 +423,10 @@ static void render(Apu *a, uint64_t from, uint64_t to, void *out, unsigned n, in
     }
     a->rpos=to;
 }
-void apu_render16(Apu *a, uint64_t from, uint64_t to, int16_t *out, unsigned n){ render(a,from,to,out,n,0); }
-void apu_render8(Apu *a, uint64_t from, uint64_t to, int8_t *out, unsigned n){ render(a,from,to,out,n,1); }
+void apu_render16(Apu *a, uint64_t from, uint64_t to, int16_t *out, unsigned n){ render(a,from,to,out,n,0,0); }
+void apu_render8(Apu *a, uint64_t from, uint64_t to, int8_t *out, unsigned n){ render(a,from,to,out,n,1,0); }
+void apu_render16_ref(Apu *a, uint64_t from, uint64_t to, int16_t *out, unsigned n){ render(a,from,to,out,n,0,1); }
+void apu_render8_ref(Apu *a, uint64_t from, uint64_t to, int8_t *out, unsigned n){ render(a,from,to,out,n,1,1); }
 
 /* ------------------------------------------------------------------ cue mode (see apu.h, docs/APU.md "Cue mode")
  * Wave ids: 0..11 pulse (duty*3 + {1,2,4} steps per sample), 12..15 triangle (1,2,4,8 steps per sample), 16..20 noise long mode (every 1,2,4,8,16th LFSR step),

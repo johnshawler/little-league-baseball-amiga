@@ -156,8 +156,51 @@ static void test_render(void){
     }
 }
 
+/* ---- 6: the fast render path (merge + core, 32 bit) == the straightforward reference path, frame after frame (contiguous windows with register traffic in between),
+ * 8 and 16 bit output, odd sample counts, tiny sample lengths (2 and 3 cycles), plus the 8 bit output against the brute force definition */
+static void test_render_fast(void){
+    int t;
+    for(t = 0; t < 80; t++){
+        uint64_t c = 0; int k, next = 0, ok = 1, ok8 = 1; static int8_t o8a[4096], o8b[4096]; static int16_t o16a[4096], o16b[4096]; unsigned bad = 0;
+        rs = 900 + t; gen(400000); apu_reset(&A);
+        for(k = 0; k < 12; k++){
+            uint64_t span = 1000 + rnd() % ((t % 4 == 0) ? 3000 : 40000), to = c + span; unsigned n = (t % 5 == 0) ? (unsigned)(span / (2 + rnd() % 2)) : 20 + rnd() % 900, i;
+            if(n > 4096) n = 4096;
+            while(next < NACC && acc[next].c < to){ if(!acc[next].kind) apu_write(&A, acc[next].a, acc[next].v, acc[next].c); next++; }
+            memcpy(&B, &A, sizeof A);
+            if(k & 1){ apu_render8(&A, c, to, o8a, n); apu_render8_ref(&B, c, to, o8b, n); bad += memcmp(o8a, o8b, n) != 0; }
+            else { apu_render16(&A, c, to, o16a, n); apu_render16_ref(&B, c, to, o16b, n); for(i = 0; i < n; i++) if(o16a[i] != o16b[i]) { bad++; break; } }
+            if(memcmp(A.qh, B.qh, sizeof A.qh) || memcmp(A.qt, B.qt, sizeof A.qt) || A.rsq != B.rsq || A.rtn != B.rtn || A.dropped != B.dropped) ok = 0;
+            c = to;
+        }
+        CHECK(bad == 0 && ok, "fast render differs from reference (t=%d, %u windows differ, state %d)", t, bad, ok); (void)ok8;
+    }
+    /* 8 bit == (v*83>>10)-128 of the 16 bit value, from the same events */
+    { int t2; for(t2 = 0; t2 < 10; t2++){ static int8_t o8[2048]; static int16_t o16[2048]; unsigned n = 300 + 50*t2, i, bad = 0; rs = 31 + t2; gen(100000); apu_reset(&A);
+        { int kk; for(kk = 0; kk < NACC; kk++){ if(acc[kk].c >= 60000) break; if(!acc[kk].kind) apu_write(&A, acc[kk].a, acc[kk].v, acc[kk].c); } }
+        memcpy(&B, &A, sizeof A); apu_render8(&A, 0, 60000, o8, n); apu_render16(&B, 0, 60000, o16, n);
+        for(i = 0; i < n; i++) if(o8[i] != (int8_t)(((unsigned)o16[i] * 83u >> 10) - 128u)) bad++;
+        CHECK(bad == 0, "render8 != render16 conversion (%u samples)", bad); } }
+}
+/* ---- 7: cue mode sanity: a pulse note, a triangle note and noise give the expected Paula periods and volumes */
+static void test_cue(void){
+    ApuCue q; apu_reset(&A); apu_set_audio(&A, 0); apu_cue_init();
+    apu_write(&A, 0x4015, 0x0F, 10);
+    apu_write(&A, 0x4000, 0xBF, 20);      /* duty 2 (50 %), halt, constant volume 15 */
+    apu_write(&A, 0x4002, 0xFD, 30); apu_write(&A, 0x4003, 0x08, 40);       /* period 0xFD: 440 Hz class */
+    apu_write(&A, 0x4008, 0xFF, 50); apu_write(&A, 0x400A, 0x7E, 60); apu_write(&A, 0x400B, 0x08, 70);
+    apu_write(&A, 0x400C, 0x3F, 80); apu_write(&A, 0x400E, 0x04, 90); apu_write(&A, 0x400F, 0x08, 100);
+    apu_cue_frame(&A, 29780, 1, &q);
+    CHECK(q.ch[0].vol > 0 && q.ch[0].vol <= 64, "pulse volume %u", q.ch[0].vol);
+    { double f = 1789773.0 / (16.0 * (0xFD + 1)), fp = 3546895.0 / (q.ch[0].per * (8.0 / (1u << (q.ch[0].wave % 3)))); CHECK(fp / f > 0.998 && fp / f < 1.002, "pulse pitch %.2f vs %.2f Hz", fp, f); }
+    CHECK(q.ch[2].vol > 0, "triangle audible");
+    { double f = 1789773.0 / (32.0 * (0x7E + 1)), fp = 3546895.0 / (q.ch[2].per * (32.0 / (1u << (q.ch[2].wave - 12)))); CHECK(fp / f > 0.998 && fp / f < 1.002, "triangle pitch %.2f vs %.2f Hz", fp, f); }
+    CHECK(q.ch[3].vol > 0 && q.ch[3].per >= 124, "noise cue");
+    { unsigned c; for(c = 0; c < 4; c++) CHECK(q.ch[c].per >= 124, "period %u below Paula's limit", q.ch[c].per); }
+}
+
 int main(void){
-    test_lfsr(); test_lazy(); test_timing(); test_render();
+    test_lfsr(); test_lazy(); test_timing(); test_render(); test_render_fast(); test_cue();
     printf("%d checks, %d failed\n", checks, fails);
     return fails != 0;
 }

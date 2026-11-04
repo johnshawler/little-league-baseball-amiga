@@ -87,6 +87,10 @@ unsigned apu_mix(int sq1, int sq2, int tri, int noi);
  * out8:  signed 8 bit, (mix*83>>10) - 128, i.e. full scale 0..255 mapped to -128..127. */
 void     apu_render16(Apu *a, uint64_t from, uint64_t to, int16_t *out, unsigned n);
 void     apu_render8(Apu *a, uint64_t from, uint64_t to, int8_t *out, unsigned n);
+/* The same results by the straightforward algorithm (one pass over the four queues, 64 bit sample boundaries; any window < 2^22 cycles).  apu_render*() uses it itself for
+ * windows of 65536 cycles or more; the tests compare the fast path against it. */
+void     apu_render16_ref(Apu *a, uint64_t from, uint64_t to, int16_t *out, unsigned n);
+void     apu_render8_ref(Apu *a, uint64_t from, uint64_t to, int8_t *out, unsigned n);
 
 /* ---- cue mode (alternative to apu_render*): instead of mixing PCM, the state of the four channels at the end of a frame is turned into a few Paula parameters per
  * channel (docs/APU.md "Cue mode").  The APU can run with apu_set_audio(a,0) in this mode: no event is queued, only the register-level state is needed.
