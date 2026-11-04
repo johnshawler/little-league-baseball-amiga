@@ -18,7 +18,7 @@ static uint8_t vram_read(Nes *n, uint16_t a){
 static void vram_write(Nes *n, uint16_t a, uint8_t v){
     a&=0x3FFF;
     if(a<0x2000) return;
-    if(a<0x3F00){ uint16_t o=nt_off(&n->map,a); P->nt[o]=v; P->ntv[o>>5]++; return; }
+    if(a<0x3F00){ uint16_t o=nt_off(&n->map,a); P->nt[o]=v; P->ntv[o>>5]++; P->ntver_all++; return; }
     uint8_t i=a&0x1F; v&=0x3F;
     if((i&3)==0){ if(P->pal[i&0x0F]!=v||P->pal[(i&0x0F)|0x10]!=v) PALVAR(P); P->pal[i&0x0F]=v; P->pal[(i&0x0F)|0x10]=v; } else { if(P->pal[i]!=v) PALVAR(P); P->pal[i]=v; }
 }
@@ -460,11 +460,17 @@ typedef uint8_t fbpix;
 #else
 typedef uint16_t fbpix;
 #endif
+#ifdef FP_FASTLINE
+static void bk_inval(int L);
+#define BK_INVAL(L) bk_inval(L)
+#else
+#define BK_INVAL(L) ((void)0)
+#endif
 static void draw_range(Nes*n,int L,int x0,int x1){
     Ppu*p=P; FpCtx*c=&p->fc[p->fcur];
     uint8_t emph=p->emph, gm=p->gray?0x30:0x3F; (void)gm; (void)emph;
     fbpix*row=&p->fb[L<<8]; const fbpix EM=FBVAL(0,emph);
-    p->rowblank[L]=0;
+    p->rowblank[L]=0; BK_INVAL(L);
     if(!p->rend){
         p->rowdirty[L]=1;
         int idx= ((p->v&0x3F00)!=0x3F00) ? 0 : (p->v&0x1F);
@@ -573,13 +579,113 @@ static inline int bgkey_eq(const BgKey*a,const BgKey*b){ const u32a*x=(const u32
 static __attribute__((noinline)) void fp_blank_line(Nes*n,int L){
     Ppu*p=P; int idx= ((p->v&0x3F00)!=0x3F00) ? 0 : (p->v&0x1F);
     if(p->rowblank[L]==idx+1) return;
+    bk_inval(L);
     uint32_t c=(uint32_t)idx*0x01010101u; u32a*r=(u32a*)&p->fb[L<<8]; for(int x=0;x<64;x++) r[x]=c;
     p->rowblank[L]=(uint8_t)(idx+1); p->rowok[L]=0; p->rowdirty[L]=1;
 }
+static void fp_line(Nes*n,int L);
+/* ---- batches of whole lines: background validity per batch ------------------------------------------------------------------------
+ * A run of whole lines (no access in between) is described by BatchKey (scroll at its start, parameters, name table write counter, extent).  When the key is the
+ * one stored for the same run last time, all background rows are still in bgrow/the frame buffer: only rows that have sprites (now or before) are touched. */
+static uint8_t ntbase_m=255; static uint16_t ntbase[4];          /* physical name table offset of logical name table 0..3 for the current mirroring */
+static uint32_t bkey[240][4]; static uint8_t bkvalid[240]; static int16_t bowner[240];
+static void bk_inval(int L){ int o=bowner[L]; if(o>=0 && o<240) bkvalid[o]=0; }
+static int bk_init_done;
+static void bk_init(void){ for(int i=0;i<240;i++) bowner[i]=-1; bk_init_done=1; }
+static void step_line(Nes*n,int y){ Ppu*p=P; p->dots+=341; p->line=y; p->cx=340; p->fcur^=1; p->fc[p->fcur^1].y=-1; fp_line(n,y); }
+/* packed sprites of output line y from the tables (sprite pattern bytes fetched with the current parameters); returns the number of visible slots */
+static int sprite_pw(Nes*n,int y,uint32_t*pw){
+    Ppu*p=P; int e=y-1, na=0; if(e<0) return 0;
+    int cnt=p->lt_cnt[e]; if(cnt>8) cnt=8;
+    for(int k=0;k<cnt;k++){
+        int oi=p->lt_idx[e][k]; int sy=p->oam[oi*4], ti=p->oam[oi*4+1], at=p->oam[oi*4+2], sx=p->oam[oi*4+3];
+        int vm=(at&0x80)!=0; int lo_= vm ? ((p->large?15:7)-(e-sy)) : (e-sy); uint16_t ta;
+        if(p->large) ta=(uint16_t)((((ti&1)?0x1000:0)|((ti&~1)<<4))+(lo_>=8?lo_+8:lo_)); else ta=(uint16_t)(((ti<<4)|p->sppat)+lo_);
+        uint8_t lo=vram_read(n,ta), hi=vram_read(n,ta+8); if(!(lo|hi)) continue;
+        pw[na++]=(uint32_t)sx|((uint32_t)lo<<8)|((uint32_t)hi<<16)|((uint32_t)(at&3)<<24)|((uint32_t)((at>>5)&1)<<26)|((uint32_t)((at>>6)&1)<<27);
+    }
+    return na;
+}
+static void overlay_row(Ppu*p,int L,const uint32_t*pw,int na,uint16_t sk){
+    uint8_t*fb=&p->fb[L<<8]; const u32a*s=(const u32a*)&bgrow[L][8]; u32a*d=(u32a*)fb; for(int i=0;i<64;i++) d[i]=s[i];
+    if(na){
+        uint32_t cl[8]={0,0,0,0,0,0,0,0}; int minsp=p->min_sp;
+        for(int i=0;i<na;i++){
+            uint32_t w=pw[i]; int sx=w&255; uint8_t lo=(uint8_t)(w>>8), hi=(uint8_t)(w>>16); uint8_t pal=(uint8_t)(((w>>24)&3)*4+0x10); int prio=(w>>26)&1, hf=(w>>27)&1;
+            for(int kx=0;kx<8;kx++){
+                int x=sx+kx; if(x>255) break; if(x<minsp) continue;
+                int b= hf ? kx : 7-kx; int sc=((lo>>b)&1)|(((hi>>b)&1)<<1); if(!sc) continue;
+                if(cl[x>>5]&(1u<<(x&31))) continue; cl[x>>5]|=1u<<(x&31);
+                if(!(fb[x]&3) || !prio) fb[x]=(uint8_t)(pal+sc);
+            }
+        }
+    }
+    rsk[L]=sk; for(int i=0;i<na;i++) rsw[L][i]=pw[i];
+    p->rowok[L]=1; p->rowdirty[L]=1; p->rowblank[L]=0;
+}
+/* lines a..b (whole, in 0..239, rendering on, no sprite-0 window inside): position is (a-1,340) */
+static void batch_segment(Nes*n,int a,int b){
+    Ppu*p=P; FpCtx*cc=&p->fc[p->fcur^1];     /* the context prepared for line a */
+    if(!bk_init_done) bk_init();
+    if(cc->y==a && cc->mode==2 && cc->t01ok==3){ step_line(n,a); if(++a>b) return; cc=&p->fc[p->fcur^1]; }   /* tiles 0,1 prefetched by a partial line: that line alone takes the per-line path */
+    uint16_t vl=decx_n(p->v,2); int clipn= p->bg_en ? (p->min_bg>256?256:p->min_bg) : 256;
+    uint32_t key[4];
+    key[0]=(uint32_t)vl|((uint32_t)(p->t&0x041F)<<16);
+    key[1]=(uint32_t)(p->bgpat?1:0)|((uint32_t)n->map.mirror<<1)|((uint32_t)p->fx<<3)|((uint32_t)clipn<<6)|((uint32_t)(n->map.chr_lo>>12)<<16)|((uint32_t)(n->map.chr_hi>>12)<<21);
+    { /* sum of the write counters of every name table row (and attribute row) the lines read: it grows when any of them is written */
+        if(ntbase_m!=n->map.mirror){ ntbase_m=n->map.mirror; for(int i=0;i<4;i++) ntbase[i]=nt_off(&n->map,(uint16_t)(0x2000+i*0x400)); }
+        uint32_t sum=0; int m=b-a+1, i=0;
+        while(i<m){
+            uint16_t vv=incy_n(vl,i); int cy=(vv>>5)&31, nA=(vv>>10)&3;
+            uint16_t r0=(uint16_t)(ntbase[nA]+cy*32), r1=(uint16_t)(ntbase[nA^1]+cy*32), a0=(uint16_t)(ntbase[nA]+0x3C0+(cy>>2)*8), a1=(uint16_t)(ntbase[nA^1]+0x3C0+(cy>>2)*8);
+            sum+=p->ntv[r0>>5]+p->ntv[r1>>5]+p->ntv[a0>>5]+p->ntv[a1>>5];
+            i+=8-((vv>>12)&7);
+        }
+        key[2]=sum; key[3]=(uint32_t)b|((uint32_t)m<<16);
+    }
+    int pre=(cc->t01ok==3 || cc->y!=a || cc->mode!=2);
+    int valid=!pre && bkvalid[a] && key[0]==bkey[a][0] && key[1]==bkey[a][1] && key[2]==bkey[a][2] && key[3]==bkey[a][3];
+    if(!valid){ if(pre){ ST(6); if(cc->y!=a){ ST(10); if(ppu_st[10]<8){ extern int fprintf(void*,const char*,...); extern void*stderr; fprintf(stderr,"pre: a=%d b=%d cc.y=%d other.y=%d line=%d frame=%u\n",a,b,cc->y,p->fc[p->fcur].y,p->line,p->frame);} } else if(cc->mode!=2) ST(11); else ST(12); } else if(!bkvalid[a]) ST(7); else ST(8); ST(9);
+        for(int y=a;y<=b;y++) step_line(n,y);
+        if(!pre){ for(int i=0;i<4;i++) bkey[a][i]=key[i]; bkvalid[a]=1; for(int y=a;y<=b;y++) bowner[y]=(int16_t)a; }
+        return;
+    }
+    ST(5);
+    lt_ensure(n); if(!p->lt_full) lt_build_full(n);
+    int sprites_on = p->sp_en && p->min_sp<256;
+    if(!p->spovf){ for(int y=a;y<=b;y++) if(p->lt_cnt[y]>=8){ int o=lt_ovf_cx(n,y); if(o){ p->spovf=1; break; } } }
+    for(int y=a;y<=b;y++){
+        int cnt= sprites_on ? p->lt_cnt[y-1] : 0;       /* output line y is drawn from evaluation line y-1 (y>=1; line 0 has no sprites) */
+        if(y==0) cnt=0;
+        if(!cnt && !(rsk[y]&0xFF)){ if(rsk[y]!=(uint16_t)((p->min_sp&0xFF)<<8) && !(rsk[y]&0xFF)) rsk[y]=(uint16_t)((p->min_sp&0xFF)<<8); continue; }
+        uint32_t pw[8]; int na= cnt ? sprite_pw(n,y,pw) : 0;
+        uint16_t sk=(uint16_t)(na|((p->min_sp&0xFF)<<8)); int same= (rsk[y]==sk && p->rowok[y]);
+        if(same) for(int i=0;i<na;i++) if(rsw[y][i]!=pw[i]){ same=0; break; }
+        if(!same) overlay_row(p,y,pw,na,sk);
+    }
+    int m=b-a+1;
+    p->v=(uint16_t)((incy_n(p->v,m)&~0x041F)|(incx_n((uint16_t)(p->t&0x041F),2)&0x041F)); p->oamaddr=0;
+    p->dots+=341ull*m; p->line=b; p->cx=340; p->fc[p->fcur].y=-1;
+    if(b<239){ FpCtx*cn=&p->fc[p->fcur^1]; int yy=b+1, mm=ctx_mode(n,yy);
+        if(mm){ ctx_init(n,cn,yy,mm); for(int kk=0;kk<cn->nspr;kk++) fetch_sprite(n,cn,kk); } else cn->y=-1; }
+}
+/* m whole lines after (L,340), all in 0..239, rendering on, pixels drawn */
+static void fp_draw_batch(Nes*n,int m){
+    Ppu*p=P; int a=p->line+1, end=a+m-1;
+    int w0=240,w1=-1;
+    if(!p->sp0hit && p->bg_en && p->sp_en){ int sy=p->oam[0], h=p->large?16:8; if(sy<240){ w0=sy; w1=sy+h; if(w1>239) w1=239; } }
+    while(a<=end){
+        if(a>=w0 && a<=w1){ step_line(n,a); a++; continue; }
+        int b=end; if(a<w0 && w0-1<b) b=w0-1;
+        batch_segment(n,a,b); a=b+1;
+        /* a hit inside the window can end it early */
+        if(p->sp0hit){ w0=240; w1=-1; }
+    }
+}
+
 /* whole line L (0..239), dots 1..340, rendering on, pixels drawn.  The context of the line (sprites; tiles 0 and 1 unless the generic path fetched them) was
  * prepared by the line before.  The background row is rebuilt only when one of its inputs changed (BgKey, compared exactly). */
-static uint8_t ntbase_m=255; static uint16_t ntbase[4];          /* physical name table offset of logical name table 0..3 for the current mirroring */
-static __attribute__((noinline)) void fp_line(Nes*n,int L){
+static void fp_line(Nes*n,int L){
     Ppu*p=P; FpCtx*cc=&p->fc[p->fcur], *cn=&p->fc[p->fcur^1];
     if(!bgtab_ready) bgtab_init();
     uint16_t v0=p->v;                                   /* v after dot 340 of the line before */
@@ -628,7 +734,7 @@ static __attribute__((noinline)) void fp_line(Nes*n,int L){
             st32(dst+8*j,tb[(hi&0xF0)|(lo>>4)]); st32(dst+8*j+4,tb[((hi&0x0F)<<4)|(lo&0x0F)]);
         }
         { u32a*r=(u32a*)row; int q=clipn>>2; for(int i=0;i<q;i++) r[i]=0; }     /* clipped pixels (left 8 or all): backdrop */
-        bgkey[L]=k; bgok[L]=1;
+        bgkey[L]=k; bgok[L]=1; bk_inval(L);
     }
     /* ---- sprites of the row */
     uint32_t pw[8]; int na=0;
@@ -736,10 +842,11 @@ void ppu_fp_run(Nes*n,uint64_t target){
 #ifdef FP_FASTLINE
                 else if(L>=-1 && L<=238 && p->draw && !FP_GENERIC){
                     int mm=239-L; if((uint64_t)mm>room/341) mm=(int)(room/341);
-                    for(int i=0;i<mm;i++){
+                    if(p->rend && mm>0) fp_draw_batch(n,mm);
+                    else for(int i=0;i<mm;i++){
                         p->dots+=341; p->line++; p->cx=340;
                         p->fcur^=1; p->fc[p->fcur^1].y=-1;
-                        if(p->rend) fp_line(n,p->line); else { p->fc[0].y=p->fc[1].y=-1; fp_blank_line(n,p->line); }
+                        p->fc[0].y=p->fc[1].y=-1; fp_blank_line(n,p->line);
                     }
                     continue;
                 }

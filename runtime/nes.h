@@ -67,6 +67,7 @@ typedef struct {
 #endif
     uint8_t  rowok[240]; uint32_t rowsig[240];   /* signature of the inputs of the row now in the framebuffer (renderer: rows with unchanged inputs are not drawn again) */
     FpCtx    fc[2]; int fcur;                     /* fast model: fetch contexts of the line being output (fc[fcur]) and of the next line */
+    uint32_t ntver_all;               /* fast model: write counter of the whole name table memory */
     uint32_t ntv[64];                 /* fast model: write counters of the 32-byte rows of the two physical name tables (a row of the background cache is valid while its source rows are unchanged) */
     uint8_t  lt_cnt[240];             /* fast model: sprites in range per evaluation line (saturated at 255) */
     uint8_t  lt_idx[240][8];          /* first 8 sprites (OAM index) in range per evaluation line (valid when lt_full) */
