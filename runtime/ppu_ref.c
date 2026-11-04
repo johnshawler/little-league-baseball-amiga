@@ -645,20 +645,30 @@ static void batch_segment(Nes*n,int a,int b){
     }
     int pre=(cc->t01ok==3 || cc->y!=a || cc->mode!=2);
     int valid=!pre && bkvalid[a] && key[0]==bkey[a][0] && key[1]==bkey[a][1] && key[2]==bkey[a][2] && key[3]==bkey[a][3];
-    if(!valid){ if(pre){ ST(6); if(cc->y!=a){ ST(10); if(ppu_st[10]<8){ extern int fprintf(void*,const char*,...); extern void*stderr; fprintf(stderr,"pre: a=%d b=%d cc.y=%d other.y=%d line=%d frame=%u\n",a,b,cc->y,p->fc[p->fcur].y,p->line,p->frame);} } else if(cc->mode!=2) ST(11); else ST(12); } else if(!bkvalid[a]) ST(7); else ST(8); ST(9);
+    if(!valid){
+#ifdef FPDBG
+    if(a<=106&&106<=b&&p->frame>=1565&&p->frame<=1575){ extern int fprintf(void*,const char*,...); extern void*stderr; fprintf(stderr,"INVALID batch %d..%d frame %u pre=%d bkv=%d\n",a,b,p->frame,pre,bkvalid[a]); }
+#endif
+ if(pre){ ST(6); if(cc->y!=a) ST(10); else if(cc->mode!=2) ST(11); else ST(12); } else if(!bkvalid[a]) ST(7); else ST(8); ST(9);
         for(int y=a;y<=b;y++) step_line(n,y);
-        if(!pre){ for(int i=0;i<4;i++) bkey[a][i]=key[i]; bkvalid[a]=1; for(int y=a;y<=b;y++) bowner[y]=(int16_t)a; }
+        if(!pre){ for(int i=0;i<4;i++) bkey[a][i]=key[i]; bkvalid[a]=1; for(int y=a;y<=b;y++){ int o=bowner[y]; if(o>=0 && o!=a) bkvalid[o]=0; bowner[y]=(int16_t)a; } }
         return;
     }
     ST(5);
+#ifdef FPDBG
+    if(a<=106&&106<=b&&p->frame>=1565&&p->frame<=1575){ extern int fprintf(void*,const char*,...); extern void*stderr; fprintf(stderr,"valid batch %d..%d frame %u rsk106=%04x rowok=%d draw=%d\n",a,b,p->frame,rsk[106],p->rowok[106],p->draw); }
+#endif
     lt_ensure(n); if(!p->lt_full) lt_build_full(n);
     int sprites_on = p->sp_en && p->min_sp<256;
     if(!p->spovf){ for(int y=a;y<=b;y++) if(p->lt_cnt[y]>=8){ int o=lt_ovf_cx(n,y); if(o){ p->spovf=1; break; } } }
     for(int y=a;y<=b;y++){
-        int cnt= sprites_on ? p->lt_cnt[y-1] : 0;       /* output line y is drawn from evaluation line y-1 (y>=1; line 0 has no sprites) */
+        int cnt= sprites_on ? (y==a ? cc->nspr : p->lt_cnt[y-1]) : 0;       /* output line y is drawn from evaluation line y-1 (y>=1; line 0 has no sprites) */
         if(y==0) cnt=0;
         if(!cnt && !(rsk[y]&0xFF)){ if(rsk[y]!=(uint16_t)((p->min_sp&0xFF)<<8) && !(rsk[y]&0xFF)) rsk[y]=(uint16_t)((p->min_sp&0xFF)<<8); continue; }
-        uint32_t pw[8]; int na= cnt ? sprite_pw(n,y,pw) : 0;
+        uint32_t pw[8]; int na=0;
+        if(y==a){ for(int i=0;i<cc->nspr && sprites_on;i++){ if(!(cc->slo[i]|cc->shi[i])) continue;      /* the first line: sprites fetched by the line before */
+                pw[na++]=(uint32_t)cc->spx[i]|((uint32_t)cc->slo[i]<<8)|((uint32_t)cc->shi[i]<<16)|((uint32_t)((cc->spal[i]>>2)&3)<<24)|((uint32_t)cc->sprio[i]<<26)|((uint32_t)cc->shf[i]<<27); } }
+        else if(cnt) na=sprite_pw(n,y,pw);
         uint16_t sk=(uint16_t)(na|((p->min_sp&0xFF)<<8)); int same= (rsk[y]==sk && p->rowok[y]);
         if(same) for(int i=0;i<na;i++) if(rsw[y][i]!=pw[i]){ same=0; break; }
         if(!same) overlay_row(p,y,pw,na,sk);
