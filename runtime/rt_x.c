@@ -120,12 +120,15 @@ int32_t xrt_skip_c(int32_t kind, int32_t d5){
     ppu_sync_rt(3*now+5);
     if(p->rend!=p->rend_prev||p->need_update) return 0;
     if(kind==1 && p->line>=240) return 0;               /* the hit of the next frame is not predicted from inside vblank */
-    int64_t cur=(int64_t)(p->line+1)*341+p->cx; uint64_t T=0; int Li=kind?10:7;
+    int64_t cur=(int64_t)(p->line+1)*341+p->cx; uint64_t T=0; int Li=(kind==1)?10:7;
     uint64_t tvbl=p->dots+((242LL*341+1)-cur>0 ? (242LL*341+1)-cur : (242LL*341+1)-cur+89341);
     if(kind==0){
         if(!p->sp0hit) return 0;                        /* flag already clear: the next poll exits */
         T=p->dots+(89342-cur);                          /* dot that clears the flag: first dot of the pre-render line */
         if(tvbl<T) T=tvbl;                              /* (never skip over the vblank start) */
+    } else if(kind==2){
+        if(p->vbl) return 0;                            /* flag already set: the next poll exits */
+        T=tvbl;                                         /* BIT $2002 / BPL self: waits for the vblank flag */
     } else {
         uint64_t th=ppu_predict_hit(&nes); T=tvbl; if(th && th<T) T=th;
     }

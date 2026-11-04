@@ -209,6 +209,7 @@ class Gen:
             return ('idle',ins[0].cyc+2+(2 if cross else 1))
         if len(ins)==2 and poll(ins[0]) and self_branch(ins[1],'BVS'): return 0
         if len(ins)==3 and poll(ins[0]) and ins[1].m=='BMI' and self_branch(ins[2],'BVC'): return 1
+        if len(ins)>=2 and poll(ins[0]) and self_branch(ins[1],'BPL') and (ins[1].nxt&0xFF00)==(ins[1].target()&0xFF00): return 2
         return None
     def exit_fall(self,b):
         t=b.fall
@@ -500,7 +501,7 @@ class Gen:
             # idle loop on a RAM flag that only an interrupt can change: skip whole iterations up to two before the cycle limit
             l2=self.newlab()
             lines+= ['move.l d5,d7',f'sub.l #{2*Li+Li},d7',f'ble.s {l2}',f'divu.l #{Li},d7',f'mulu.l #{Li},d7','sub.l d7,d5',l2+':']
-        elif self.loopkind is not None and tk==self.b.key and i is self.b.ins[-1]: lines.append(f'move.w #{self.loopkind},(4,a2)'); lines.append('jsr rt_skip')
+        elif self.loopkind is not None and tk==self.b.key and i is (self.b.ins[1] if self.loopkind==2 else self.b.ins[-1]): lines.append(f'move.w #{self.loopkind},(4,a2)'); lines.append('jsr rt_skip')
         if tk in self.entries: lines.append(f'jmp {label(tk)}')
         else: lines.append(f'move.w #0x{t:X},d7'); lines.append('jmp rt_unk')
         l=self.newlab(); self.stubs.append((l,lines)); self.e(f'b{cond} {l}')
