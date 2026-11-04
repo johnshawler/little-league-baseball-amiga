@@ -100,3 +100,34 @@ void audio_commit(unsigned words)
         R16(DMACON) = SETBIT | DMAEN | 0x0003;
     }
 }
+
+/* ------------------------------------------------------------------ cue mode (see audio.h, docs/APU.md "Cue mode") */
+static const uint8_t cue_hw[4] = { 0, 1, 3, 2 };            /* NES channel -> Paula channel (0,3 left, 1,2 right) */
+static int8_t cue_zero[2] __attribute__((aligned(4)));
+static uint8_t cue_wave_last[4], cue_vol_last[4]; static uint16_t cue_per_last[4];
+
+void audio_cue_init(void)
+{
+    R16(DMACON) = 0x000F; R16(INTENA) = 0x0780; R16(INTREQ) = 0x0780;      /* channels off, audio interrupts off */
+    R16(ADKCON) = 0x00FF;
+    for (unsigned c = 0; c < 4; c++) {
+        R32(AUDLC(c)) = (uint32_t)cue_zero; R16(AUDLEN(c)) = 1; R16(AUDPER(c)) = 124; R16(AUDVOL(c)) = 0;
+        cue_wave_last[c] = 0xFF; cue_vol_last[c] = 0; cue_per_last[c] = 124;
+    }
+    R16(DMACON) = SETBIT | DMAEN | 0x000F;
+}
+
+void audio_cue_apply(const ApuCue *q)
+{
+    for (unsigned n = 0; n < 4; n++) {
+        const ApuCueCh *c = &q->ch[n]; unsigned h = cue_hw[n];
+        if (c->vol) {
+            if (c->wave != cue_wave_last[n]) {                             /* latched by Paula at the end of the current loop */
+                const ApuCueWave *w = apu_cue_wave(c->wave);
+                R32(AUDLC(h)) = (uint32_t)w->data; R16(AUDLEN(h)) = w->words; cue_wave_last[n] = c->wave;
+            }
+            if (c->per != cue_per_last[n]) { R16(AUDPER(h)) = c->per; cue_per_last[n] = c->per; }
+        }
+        if (c->vol != cue_vol_last[n]) { R16(AUDVOL(h)) = c->vol; cue_vol_last[n] = c->vol; }
+    }
+}

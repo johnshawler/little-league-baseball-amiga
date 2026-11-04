@@ -117,7 +117,8 @@ static void on_frame(long f)
         for (;;) __asm__ volatile("stop #0x2000");
     }
 #endif
-    /* 3. sound: the samples of this frame; wait for a free slot if the ring is full (the game is ahead of Paula) */
+    /* 3. sound */
+#ifdef AUDIO_EXACT        /* exact mixer: the samples of this frame; wait for a free slot if the ring is full (the game is ahead of Paula) */
     {
         int8_t *buf = audio_alloc();
         if (!buf) { t0 = plat_eclock(); do plat_wait_ticks(plat_tick_count + 1); while (!(buf = audio_alloc())); st_idle += e_since(t0); }
@@ -129,6 +130,16 @@ static void on_frame(long f)
         audio_commit(w);
         st_audio += e_since(t0);
     }
+#else                     /* cue mode: the APU state at the end of the frame programs the four Paula channels (no PCM, no ring) */
+    {
+        ApuCue cue;
+        t0 = plat_eclock();
+        uint64_t to = nes.ppu.dots / 3 - 2;
+        apu_cue_frame(&rt_apu, to, plat_is_pal, &cue);
+        audio_cue_apply(&cue);
+        st_audio += e_since(t0);
+    }
+#endif
 #ifdef PROFILE
     {
         static uint8_t done;
@@ -213,7 +224,11 @@ void main(void)
     stage(1);
     tabs_expand();
     stage(2);
+#ifdef AUDIO_EXACT
     audio_init();
+#else
+    audio_cue_init(); apu_cue_init();
+#endif
     stage(3);
     rt_init(rom_start, rom_start + 131072);
     stage(4);
@@ -222,6 +237,9 @@ void main(void)
     a_from = 0;
 #ifdef SNAPSHOT
     snap_load();
+#endif
+#ifndef AUDIO_EXACT
+    apu_set_audio(&rt_apu, 0);               /* cue mode: no channel sequencer / event queue, the registers' state is all that is needed */
 #endif
     game_base = plat_tick_count;
     xrt_run(0x7FFFFFFF);
