@@ -65,3 +65,11 @@ line with the exact NES rules (8 per line, priority, claim, flips, clip); a spri
 bitmap at the scrolled position) while composing.  The layer is cleared incrementally (only rows written in the previous frame).  Per-region colour state as before
 (`pal[32]`, gray, emph); every line is covered by exactly one region.
 `ar_expand_hw()` expands exactly this display model (bitmap window + sprite layer, playfield 2 over playfield 1) to palette indices; the host check compares it with the reference.
+
+### Platform notes for the stage 2b format (display_ar.c; measured in FS-UAE)
+* **DMA cost with fast RAM** (field scene, chunky path, same snapshot, ticks 2339..12023): 5 planes FMODE 1 22.85 %, **8 planes FMODE 1 22.79 %**, 8 planes FMODE 0 22.31 %: with the program in fast RAM the display DMA costs nothing measurable, so the 4+4 dual playfield above is the cheaper exact format
+  (only CPU accesses to chip RAM - sprite layer, Copper lists, bitmap updates - are slowed).
+* Mode: BPLCON0 0x0611 (8 planes, DBLPF), BPLCON2 PF2PRI (0x0040: sprites in front), BPLCON3 PF2OF = 100 (playfield 2 colours start at register 16): sprite value u (1..15) -> register 16+u = palette RAM entry 16+u; background value v -> register v with 4, 8, 12 = entry 0.
+* Fetch/scroll: FMODE 0 (16-bit fetch, g = 2) needs one extra word at the left (DDFSTRT 0x40 / DDFSTOP 0xC0, 17 words) and a 4-bit scroll: with N = bytex*8 + fx: r = N & 15; r = 0: pointer word (N>>4)-1, scroll 0; else pointer word N>>4, scroll 16-r (BPLCON1 low nibble = playfield 1, sprite layer unscrolled with 2 pad bytes).
+  The 8 guard bytes of AR_BROW=72 cover 17 words only if the extra left word never needs data before byte 0: the bitmap pointer for bytex = 0 and r = 0 would be word -1: the platform therefore asks for **2 pad bytes in front of every row** (row stride 74 / base +2) or the platform restricts the pointer to word 0 with scroll 16 (loses one pixel position). To be settled with the implementation.
+* Palette switches that need more MOVEs than fit into the blank: the platform needs `ArRegion.used` (32-bit mask of the palette indices that occur in the region's lines) to write only visible colours; without it a full 32-colour change (emphasis flash) shows its first 1-3 lines late.
