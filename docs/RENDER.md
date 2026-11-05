@@ -1,0 +1,41 @@
+# Amiga-style rendering (arender)
+
+Goal: stop emulating the PPU pixel pipeline into a chunky frame buffer followed by chunky-to-planar conversion.  The PPU model (`ppu_ref.c`) stays the exact
+state/timing model; on displayed frames it records a **scene log**, and `runtime/arender.c` turns log + VRAM + OAM + CHR into a planar picture.
+Everything stays proven against the per-dot reference: `ar_expand()` of the planar result must equal the reference frame buffer (PPU_FB5 palette index per
+pixel) for every frame of the 6000-frame play script and cov1-8 (checked in the `PPU_CHECK` harness).
+
+## Scene log (see `runtime/arender.h`)
+* **Region**: a run of whole lines `[y0,y1]` with identical rendering parameters (fine X, BG/sprite pattern table, 8x16, CHR bank pair, mirroring, mask
+  enables / left clip, palette RAM) and the normal scroll progression (`vl` of the first line; later lines: increment Y, copy `tx` horizontal bits).
+  A frame normally has 3-6 regions (e.g. field / status panel split at the sprite-0 line).
+* **Exact line**: a line the model cannot describe as a plain region (a register access, i.e. a mid-line parameter change, landed inside it or in the line
+  before: tile and sprite fetches then used different parameters in the two halves).  Those rows are produced by the exact chunky renderer and converted;
+  typically 0-12 lines per frame.  Nothing is approximated: this is what keeps stage 1 exact for arbitrary register timing.
+* Palette RAM writes inside a region split it (the palette snapshot is part of the region), so mid-frame palette effects are exact ("palvar" frames).
+* OAM is snapshotted at frame start; a write during the visible part marks the whole frame exact.
+
+## Background: persistent planar bitmaps
+Per configuration (CHR bank pair, BG pattern table, mirroring) one 4-plane bitmap of the 4 logical nametables (512 x 512 px; 4 planes: pattern bit 0/1,
+palette bit 0/1 (attribute)), built from CHR tiles converted once to planar form (per 4 KB bank 256 tiles x 2 planes x 8 rows).  Updated incrementally from
+the nametable row write counters (`Ppu.ntv[]`): only rows whose counter changed are rebuilt (an attribute row rebuilds the 4 tile rows it covers).  A few
+configurations are cached (8; 128 KB each in fast RAM).  Scrolling costs nothing: line y of a region reads bitmap row `ynt*256 + coarseY*8 + fineY`
+starting at pixel `xnt*256 + coarseX*8 + fx`, 256 pixels, wrapping at 512.  On the Amiga the display pointers point straight into the bitmap (byte offset =
+coarse X, fine X = BPLCON1, Copper list per region).  Bitmaps the display reads must live in chip RAM (2 MB total, 8 configs = 1 MB: budget in stage 2).
+Colour 0 of each palette is the backdrop: palette indices 4, 8, 12 are loaded with palette RAM entry 0 in the colour registers, so a BG pixel with pattern
+value 0 needs no special case.
+
+## Sprites
+Per output line: evaluation exactly as the PPU (first 8 sprites in OAM order whose Y range covers the evaluation line; the 9th and later are not drawn),
+patterns from CHR with flips / 8x16, composed on the line's planes with row-wise mask operations: opaque mask from the two pattern bytes, first opaque
+sprite claims the pixel, behind-BG sprites only where the BG pixel value is 0, left-8 clip bit, right edge clipping.  Sprite pixels write plane 4 = 1 and
+the sprite palette index (16 + 4*pal + value) into planes 0..3.
+
+## Output
+5 planes (index = plane4<<4 | plane3<<3 | ... | plane0), 240 rows of 32 bytes per plane, plus per region the 32-entry palette state (palette RAM, gray,
+emphasis).  Stage 2: Copper list per region.
+
+## Stages
+1. (host, exact) scene log emission in the PPU model, `arender.c`, comparison in `PPU_CHECK`.
+2. (Amiga) display pointers into the persistent bitmaps, fine X by BPLCON1, sprites drawn with save/restore or dual playfield, skipping work on frames that
+   are not displayed.
