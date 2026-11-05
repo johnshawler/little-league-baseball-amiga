@@ -1,7 +1,10 @@
 /* arender.c - planar rendering of the NES picture from the scene log (see arender.h, docs/RENDER.md).  Target independent. */
 #pragma GCC optimize ("no-strict-aliasing")
 #include "arender.h"
-#include <string.h>
+/* no libc calls (freestanding Amiga build): byte loops */
+static void ar_set(void*d,int v,unsigned n){ uint8_t*p=d; while(n--) *p++=(uint8_t)v; }
+static void ar_cpy(void*d,const void*s,unsigned n){ uint8_t*p=d; const uint8_t*q=s; while(n--) *p++=*q++; }
+static int ar_cmp(const void*a,const void*b,unsigned n){ const uint8_t*p=a,*q=b; while(n--){ if(*p!=*q) return *p-*q; p++; q++; } return 0; }
 
 ArScene ar_scene; ArFrame ar_out;
 static uint8_t ar_planes[5][240*AR_STRIDE];
@@ -20,14 +23,14 @@ static uint16_t nt_phys(int mirror,int nt){     /* physical offset of logical na
     switch(mirror){ case 0: o=0; break; case 1: o=0x400; break; case 2: o=(uint16_t)(a&0x400); break; default: o=(uint16_t)((a&0x800)>>1); }
     return o;
 }
-void ar_init(void){ memset(cfgs,0,sizeof cfgs); stamp_ctr=0; }
+void ar_init(void){ ar_set(cfgs,0,sizeof cfgs); stamp_ctr=0; }
 static int get_cfg(int bank,int mirror){
     int best=0; uint32_t bs=0xFFFFFFFFu;
     for(int i=0;i<AR_MAX_CFG;i++){
         if(cfgs[i].valid && cfgs[i].bank==bank && cfgs[i].mirror==mirror){ cfgs[i].stamp=++stamp_ctr; return i; }
         uint32_t s=cfgs[i].valid? cfgs[i].stamp : 0; if(s<bs){ bs=s; best=i; }
     }
-    ArCfg*c=&cfgs[best]; memset(c->bvok,0,sizeof c->bvok); c->valid=1; c->bank=(uint8_t)bank; c->mirror=(uint8_t)mirror; c->stamp=++stamp_ctr;
+    ArCfg*c=&cfgs[best]; ar_set(c->bvok,0,sizeof c->bvok); c->valid=1; c->bank=(uint8_t)bank; c->mirror=(uint8_t)mirror; c->stamp=++stamp_ctr;
     return best;
 }
 /* make tile row cy of logical nametable nt current in bitmap c */
@@ -58,7 +61,7 @@ static uint16_t next_vl(const ArRegion*r){            /* vl of the line after th
 static int resnap; static ArRegion disp[AR_MAX_REGIONS]; static int ndisp;
 static void render_region(Nes*n,const ArRegion*r);
 void ar_begin_frame(Nes*n){
-    ar_scene.nreg=0; ar_scene.overflow=0; resnap=0; ndisp=0; memset(ar_scene.exact,0,sizeof ar_scene.exact); memcpy(ar_scene.oam,n->ppu.oam,256);
+    ar_scene.nreg=0; ar_scene.overflow=0; resnap=0; ndisp=0; ar_set(ar_scene.exact,0,sizeof ar_scene.exact); ar_cpy(ar_scene.oam,n->ppu.oam,256);
 }
 /* render the regions logged so far with the state as it is now (called before a name table / OAM change in the middle of the frame) */
 void ar_flush(Nes*n,int oam_changes){
@@ -68,11 +71,11 @@ void ar_flush(Nes*n,int oam_changes){
 static int same_params(const ArRegion*a,const ArRegion*b){
     return a->tx==b->tx && a->fx==b->fx && a->rend==b->rend && a->blank_idx==b->blank_idx && a->bg_en==b->bg_en && a->sp_en==b->sp_en && a->min_bg==b->min_bg &&
            a->min_sp==b->min_sp && a->bgpat==b->bgpat && a->sppat==b->sppat && a->large==b->large && a->mirror==b->mirror && a->chr_lo==b->chr_lo &&
-           a->chr_hi==b->chr_hi && a->gray==b->gray && a->emph==b->emph && !memcmp(a->pal,b->pal,32);
+           a->chr_hi==b->chr_hi && a->gray==b->gray && a->emph==b->emph && !ar_cmp(a->pal,b->pal,32);
 }
 void ar_log_region(Nes*n,const ArRegion*r){
     ArScene*s=&ar_scene;
-    if(resnap){ memcpy(s->oam,n->ppu.oam,256); resnap=0; }
+    if(resnap){ ar_cpy(s->oam,n->ppu.oam,256); resnap=0; }
     if(s->nreg){
         ArRegion*l=&s->reg[s->nreg-1];
         if(l->y1+1==r->y0 && same_params(l,r) && (!r->rend || next_vl(l)==r->vl) ){ l->y1=r->y1; return; }
@@ -96,7 +99,7 @@ static void render_region(Nes*n,const ArRegion*r){
     uint16_t vl=r->vl; int h=r->large?16:8;
     for(int y=r->y0;y<=r->y1;y++){
         if(!r->rend){
-            for(int k=0;k<5;k++) memset(&ar_planes[k][y*AR_STRIDE],((r->blank_idx>>k)&1)?0xFF:0,AR_STRIDE);
+            for(int k=0;k<5;k++) ar_set(&ar_planes[k][y*AR_STRIDE],((r->blank_idx>>k)&1)?0xFF:0,AR_STRIDE);
         } else if(!ar_scene.exact[y]){
             int cy=(vl>>5)&31, x0=vl&31, nt=(vl>>10)&3, fy=(vl>>12)&7, ny=nt>>1, nx=nt&1;
             int bank= r->bgpat ? r->chr_hi : r->chr_lo; int c=get_cfg(bank,r->mirror);
@@ -107,7 +110,7 @@ static void render_region(Nes*n,const ArRegion*r){
                 const uint8_t*src=bmp[c][k][row];
                 for(int i=0;i<AR_STRIDE;i++){ int b=(b0+i)&63; line[k][i]= sh? (uint8_t)((src[b]<<sh)|(src[(b+1)&63]>>(8-sh))) : src[b]; }
             }
-            memset(line[4],0,AR_STRIDE);
+            ar_set(line[4],0,AR_STRIDE);
             /* left clip / disabled background: pixels x < min_bg are backdrop (index 0) */
             { int cl= r->bg_en ? (r->min_bg>256?256:r->min_bg) : 256;
               for(int i=0;i<(cl>>3);i++) for(int k=0;k<4;k++) line[k][i]=0; }
@@ -116,7 +119,7 @@ static void render_region(Nes*n,const ArRegion*r){
             if(y>=1 && r->sp_en && r->min_sp<256){
                 int e=y-1, cnt=0, idx[8];
                 for(int i=0;i<64 && cnt<8;i++){ int sy=ar_scene.oam[i*4]; if(e>=sy && e<sy+h) idx[cnt++]=i; }
-                uint8_t claim[AR_STRIDE]; memset(claim,0,sizeof claim);
+                uint8_t claim[AR_STRIDE]; ar_set(claim,0,sizeof claim);
                 for(int q=0;q<cnt;q++){
                     int i=idx[q]; int sy=ar_scene.oam[i*4], ti=ar_scene.oam[i*4+1], at=ar_scene.oam[i*4+2], sx=ar_scene.oam[i*4+3];
                     if(sy>=240) continue;
@@ -149,7 +152,7 @@ static void render_region(Nes*n,const ArRegion*r){
                         line[4][bb]|=D; }
                 }
             }
-            for(int k=0;k<5;k++) memcpy(&ar_planes[k][y*AR_STRIDE],line[k],AR_STRIDE);
+            for(int k=0;k<5;k++) ar_cpy(&ar_planes[k][y*AR_STRIDE],line[k],AR_STRIDE);
         }
         vl=(uint16_t)((incy1(vl)&~0x041F)|r->tx);
     }
@@ -160,7 +163,7 @@ void ar_end_frame(Nes*n,ArFrame*out){
     ar_flush(n,0); out->nreg=ndisp; for(int i=0;i<ndisp;i++) out->reg[i]=disp[i];
     /* exact rows: from the chunky frame buffer (palette index per pixel) */
     for(int y=0;y<240;y++) if(s->exact[y]){
-        for(int k=0;k<5;k++) memset(&ar_planes[k][y*AR_STRIDE],0,AR_STRIDE);
+        for(int k=0;k<5;k++) ar_set(&ar_planes[k][y*AR_STRIDE],0,AR_STRIDE);
         for(int x=0;x<256;x++){ unsigned v=p->fb[y*256+x]&31; for(int k=0;k<5;k++) if((v>>k)&1) ar_planes[k][y*AR_STRIDE+(x>>3)]|=(uint8_t)(0x80>>(x&7)); }
     }
 }

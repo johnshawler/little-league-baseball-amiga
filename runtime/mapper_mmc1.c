@@ -19,11 +19,17 @@ void mmc1_write(Mapper *m, uint16_t addr, uint8_t v){
     if(m->count==5){ m->reg[(addr>>13)&3]=m->shift; m->shift=0; m->count=0; update(m); }
 }
 /* 1 if the write changes what the PPU sees (CHR banks or mirroring): the board synchronises the PPU before applying it */
+static void chr_banks(uint8_t ctl,uint8_t r1,uint8_t r2,uint32_t*lo,uint32_t*hi){
+    if(ctl&0x10){ *lo=(r1&31)*4096u; *hi=(r2&31)*4096u; } else { uint32_t b8=(r1&0x1E); *lo=b8*4096u; *hi=(b8+1)*4096u; }
+}
 int mmc1_write_ppu_effect(const Mapper *m, uint16_t addr, uint8_t v){
 #ifdef NOCHRSYNC
     return 0;
 #endif
     if((v&0x80) || m->count!=4) return 0;
-    Mapper t=*m; mmc1_write(&t,addr,v);
-    return t.chr_lo!=m->chr_lo || t.chr_hi!=m->chr_hi || t.mirror!=m->mirror;
+    uint8_t nv=(uint8_t)((m->shift>>1)|((v&1)<<4)); int r=(addr>>13)&3; uint8_t ctl=m->reg[0], r1=m->reg[1], r2=m->reg[2];
+    if(r==3) return 0;
+    if(r==0){ if((nv&3)!=m->mirror) return 1; ctl=nv; } else if(r==1) r1=nv; else r2=nv;
+    uint32_t lo,hi; chr_banks(ctl,r1,r2,&lo,&hi);
+    return lo!=m->chr_lo || hi!=m->chr_hi;
 }

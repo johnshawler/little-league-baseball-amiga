@@ -242,7 +242,7 @@ void ppu_reg_write(Nes *n, uint16_t a, uint8_t v){
     case 3: p->oamaddr=v; break;
     case 4:
         if(p->fp) fp_oam_fix(n);
-        if(p->line>=240 || !p->rend){ uint8_t b=v; if((p->oamaddr&3)==2) b&=0xE3; if(p->ar_on && p->line>=0 && p->line<240) ar_flush(n,1); p->oam[p->oamaddr]=b; p->oamaddr++; p->oam_dirty=1; }
+        if(p->line>=240 || !p->rend){ uint8_t b=v; if((p->oamaddr&3)==2) b&=0xE3; if(p->ar_on && p->line>=0 && p->line<240) ar_flush(n,1); if(p->oam[p->oamaddr]!=b) p->oam_dirty=1; p->oam[p->oamaddr]=b; p->oamaddr++; }
         else p->oamaddr+=4;
         break;
     case 5:
@@ -889,6 +889,7 @@ static void fp_first_cycle(Nes*n){
     if(p->need_update) update_state(n);
 }
 /* Advance to `target` dots, or until an event the board has to look at (frame completed, NMI line changed). */
+uint64_t ppu_predict_hit(Nes*n);
 void ppu_fp_run(Nes*n,uint64_t target){
     Ppu*p=P; uint8_t nmi0=p->nmi_level;
     while(p->dots<target){
@@ -915,14 +916,13 @@ void ppu_fp_run(Nes*n,uint64_t target){
 #ifdef FP_FASTLINE
                     if(p->ar_on && !ar_ok(p->rend)) mm=0;      /* the first line after a partial line is an exact line: it is processed on its own */
 #endif
-                    /* lines that have work: sprite-0 window, overflow lines */
+                    /* the flags the lines would set: sprite overflow (the first line with 8 or more sprites in range) and the sprite-0 hit (predicted for the whole
+                     * run: no access lands inside it, so the parameters are constant); the moment inside the run is not observable */
                     if(p->rend){
                         lt_ensure(n);
-                        int lim=L+1+mm;                       /* lines L+1 .. lim-1 may be skipped */
-                        if(!p->sp0hit){ int sy=p->oam[0], h=p->large?16:8; if(sy<240){ int w0=sy, w1=sy+h; if(w1>239) w1=239;   /* lines with work: sy .. sy+h */
-                            if(L+1<=w1 && w0<lim){ lim = w0>L+1 ? w0 : L+1; } } }
-                        if(!p->spovf){ for(int l=L+1;l<lim;l++) if(p->lt_cnt[l]>=8){ lim=l; break; } }
-                        m=lim-(L+1); if(m<0) m=0;
+                        if(!p->spovf){ for(int l=L+1;l<=L+mm;l++) if(p->lt_cnt[l]>=8){ if(lt_ovf_cx(n,l)){ p->spovf=1; break; } } }
+                        if(!p->sp0hit && p->bg_en && p->sp_en){ uint64_t H=ppu_predict_hit(n); if(H && H<=p->dots+341ull*mm) p->sp0hit=1; }
+                        m=mm;
                     } else m=mm;
                     if(m>0){
 #ifdef FP_FASTLINE

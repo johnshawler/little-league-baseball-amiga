@@ -35,8 +35,21 @@ uint32_t xrt_rd_c(uint32_t addr, int32_t d5, int32_t adj){
     if(a>=0x2000 && a<0x8000) trace_c('R',a,v,c);
     return v;
 }
+#ifdef AMIGA
+#define XCHK 0
+#else
+extern int rt_ppu_check;
+#define XCHK rt_ppu_check
+#endif
 int32_t xrt_wr_c(uint32_t addr, uint32_t val, int32_t d5, int32_t adj){
     uint64_t c=rt.limit-(int64_t)d5+adj; uint16_t a=(uint16_t)addr;
+    if(a>=0x8000 && !XCHK){          /* mapper write (the fifth of a serial load, or a reset): no layers in between */
+        trace_c('W',a,(uint8_t)val,c);
+        if(mmc1_write_ppu_effect(&nes.map,a,(uint8_t)val)) ppu_sync_rt(3*c+4);
+        mmc1_write(&nes.map,a,(uint8_t)val); rt.openbus=(uint8_t)val; load_mapper_ptrs();
+        if(!rt.ldirty) return 0;
+        rt.ldirty=0; uint64_t nl=rt_compute_limit_at(c); int32_t delta=(int32_t)(nl-rt.limit); rt.limit=nl; return delta;
+    }
     if(a>=0x2000) trace_c('W',a,(uint8_t)val,c);
     rt_io_wr(a,(uint8_t)val,c);
     if(a>=0x8000) load_mapper_ptrs();

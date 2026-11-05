@@ -174,9 +174,12 @@ static void process_dma(uint16_t read_addr){
                         (!p->rend || (p->line>=240 && (p->line-240)*341+p->cx+rem < 21*341))) ? 1 : 0;
                 if(fast && rt.dma_on){   /* the remaining pairs of get/put cycles in one go: bytes ra..255 of the RAM page into OAM at the OAM address, 2 cycles each */
                     const uint8_t*src=nes.ram+((rt.dma_page<<8)&0x7FF); unsigned oa=p->oamaddr; uint8_t*oam=p->oam; unsigned i=ra;
-                    for(;i<256;i++){ uint8_t b=src[i]; if((oa&3)==2) b&=0xE3; oam[oa]=b; oa=(oa+1)&255; }
                     if(p->ar_on && p->line>=0 && p->line<240) ar_flush(&nes,1);
-                    p->oamaddr=(uint8_t)oa; p->oam_dirty=1; p->openbus=src[255]; rt.cyc+=2u*(256-ra); rt.dma_on=0; rt_sync(3*rt.cyc+4);
+                    uint8_t diff=0;
+                    for(;i<256 && (oa&3);i++){ uint8_t b=src[i]; if((oa&3)==2) b&=0xE3; diff|=(uint8_t)(oam[oa]^b); oam[oa]=b; oa=(oa+1)&255; }
+                    for(;i+4<=256;i+=4,oa=(oa+4)&255){ uint8_t b0=src[i],b1=src[i+1],b2=src[i+2]&0xE3,b3=src[i+3]; diff|=(uint8_t)((oam[oa]^b0)|(oam[oa+1]^b1)|(oam[oa+2]^b2)|(oam[oa+3]^b3)); oam[oa]=b0; oam[oa+1]=b1; oam[oa+2]=b2; oam[oa+3]=b3; }
+                    for(;i<256;i++){ uint8_t b=src[i]; if((oa&3)==2) b&=0xE3; diff|=(uint8_t)(oam[oa]^b); oam[oa]=b; oa=(oa+1)&255; }
+                    p->oamaddr=(uint8_t)oa; if(diff) p->oam_dirty=1; p->openbus=src[255]; rt.cyc+=2u*(256-ra); rt.dma_on=0; rt_sync(3*rt.cyc+4);
                 }
             }
         }
