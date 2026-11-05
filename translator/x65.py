@@ -163,7 +163,6 @@ def liveness(prog,blocks):
     return live_in
 
 # ----------------------------------------------------------------------------------------------------------------------------------------
-QEMU_SAFE=bool(os.environ.get('XL_QEMU_SAFE'))      # qemu-m68k 8.2.2 mis-evaluates a Bcc after BTST #n,<memory> when a translation block ends between the two (page end); code for qemu builds tests the byte through a data register instead
 DEBUG_BLOCKS=bool(os.environ.get('XL_DEBUG_BLOCKS'))
 DEBUG_PCS=set(int(x,16) for x in open(os.environ['XL_DEBUG_PCS']).read().split()) if os.environ.get('XL_DEBUG_PCS') else None      # debug hook only in the blocks starting at these addresses
 CTX_ADJ=4          # word: adjustment for the access cycle of the next helper call
@@ -347,9 +346,7 @@ class Gen:
             if fz and fz[0]=='ccr': return 'eq' if want else 'ne'
             if fz and fz[0]=='reg': self.e(f'tst.b {fz[1]}'); return 'eq' if want else 'ne'
             if fz and fz[0]=='bit': self.e('tst.b d7'); return 'eq' if want else 'ne'
-            if QEMU_SAFE: self.e(f'move.b ({CTX_NZC},a2),d7'); self.e('btst #1,d7')
-            else: self.e(f'btst #1,({CTX_NZC},a2)')
-            return 'ne' if want else 'eq'
+            self.e(f'btst #1,({CTX_NZC},a2)'); return 'ne' if want else 'eq'
         if f=='N':
             if fz and fz[0]=='ccr': return 'mi' if want else 'pl'
             if fz and fz[0]=='reg': self.e(f'tst.b {fz[1]}'); return 'mi' if want else 'pl'
@@ -360,9 +357,7 @@ class Gen:
             self.e('tst.b d4'); return 'ne' if want else 'eq'
         if f=='V':
             if fz and fz[0]=='bit': self.e('btst #6,d6'); return 'ne' if want else 'eq'
-            if QEMU_SAFE: self.e(f'move.b ({CTX_V},a2),d7'); self.e('btst #6,d7')
-            else: self.e(f'btst #6,({CTX_V},a2)')
-            return 'ne' if want else 'eq'
+            self.e(f'btst #6,({CTX_V},a2)'); return 'ne' if want else 'eq'
 
     # ------------------------------------------------------------------ instructions
     def gen_ins(self,i):
