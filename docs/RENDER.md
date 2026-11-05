@@ -51,8 +51,8 @@ emphasis).  Stage 2: Copper list per region.
 
 ## Stage 2b: hardware format (agreed interface, to be implemented in arender.c / display_ar.c)
 No per-line shifting of background rows.  `ar_end_frame` produces regions of three kinds (`ArRegion.kind`):
-* `AR_BG`: lines y0..y1 show bitmap rows `row0 .. row0+(y1-y0)` of background bitmap `cfg` (`AR_BMP(cfg,plane,row)`, 4 planes, rows of `AR_BROW`=72 bytes: 64
-  bytes = 512 pixels plus 8 guard bytes so a 256 pixel window starting at byte `bytex` (0..63) never wraps).  Plane pointer = `AR_BMP(cfg,plane,row0) + bytex`,
+* `AR_BG`: lines y0..y1 show bitmap rows `row0 .. row0+(y1-y0)` of background bitmap `cfg` (`AR_BMP(cfg,plane,row)`, 4 planes, rows of `AR_BROW`=96 bytes: 64
+  bytes = 512 pixels plus 32 guard bytes = copy of bytes 0..31, so the 17-word window starting at byte `bytex` (0..63) never wraps).  Plane pointer = `AR_BMP(cfg,plane,row0) + bytex`,
   rounded down to the fetch granularity of the platform's FMODE, the remainder goes into the horizontal scroll: scroll in pixels = (bytex mod g)*8 + fx
   (g = pointer granularity in bytes).  Display modulo = AR_BROW - width fetched.  Regions are split where the row sequence jumps (Y wrap) and where the first
   line's x differs from the following lines.
@@ -77,3 +77,18 @@ bitmap at the scrolled position) while composing.  The layer is cleared incremen
   (pointer = row - 2, the hidden pad word): allocate 2 spare bytes before ar_hw.spr / xpf1 / xpf2 (they are only fetched, never displayed).
 * Palette switches that need more MOVEs than fit into the blank (about 22-26 MOVEs after the last fetch of the previous line): `display_ar2.c` writes only changed registers (hi/lo pass), no pointer MOVEs for a region that continues (a palette-only split costs just the colours), and
   with the optional `used` masks (`Ar2Mem.used[i]`, 32-bit palette-index mask of what region i shows; NULL = all) skips colours the region does not show and writes colours that the previous region does not show one line earlier.  **Request: `ArRegion.used`** (bit e = palette RAM entry e occurs in the region's output pixels, entry 0 for backdrop, 16+u for sprite value u).  Without it a full 32-colour change (emphasis flash) shows its first 1-3 lines late.
+
+### Stage 2b: what arender produces (implemented, runtime/arender.c, `ar_hw_enable=1`; host check `ARENDER=2`)
+* Memory (`ar_hw_setmem(chip)`, `AR_HW_BYTES`): `ar_hw.bmp` (4 configs x 4 planes x 512 rows x `AR_BROW`), then two sets of three blocks (sprite layer, xpf1, xpf2), each block
+  `AR_LAYB` = 4 spare bytes + 4 planes x 240 rows x 32 bytes; the pointers `ar_hw.spr/xpf1/xpf2` point behind the spare bytes.  The Ar2Mem the Copper builder needs is
+  {ar_hw.bmp, ar_hw.spr, ar_hw.xpf1, ar_hw.xpf2, AR_BROW, used[]}.
+* Double buffering: the platform calls `ar_hw_shown()` after it switched the display to the picture of the last `ar_end_frame`; the next frame is composed into the other set.
+  A frame that is not shown keeps the set.  The persistent bitmaps are updated in place (tile rows are rebuilt when the name table / attribute rows changed), so a bitmap row
+  that changes while the previous picture is still displayed shows the new content one frame early (only for rows that change in the frame, i.e. at the edge of a scroll).
+* Sprite layer: cleared incrementally (rows written two shown frames ago); the background left clip / disabled background is a cover (value 4 = backdrop) in the layer.
+* `ArRegion.used` (32-bit mask of palette RAM entries that can occur; entry 0 = backdrop, 16+u sprite value u) for AR_BG regions: background part from per tile row masks built when
+  the bitmap row is built, sprite part from the sprites drawn into the region's lines.  AR_EXACT / AR_BLANK: all bits.  The host check verifies that no pixel shows an entry outside `used`.
+* A name table byte written while a frame is displayed (`ar_flush_nt`) bakes the background regions shown so far into xpf1/xpf2 (they point to bitmaps that are about to change).
+* `ar_hw_palette(region, out[32])` = palette entry each colour register must show.
+* Lines are plain regions even when a $2002 poll (sprite-0 wait) splits the line into pieces: the model decides at the end of the visible dots whether a PPU register / mapper /
+  OAM write landed in the line (`Ppu.ar_wr`); exact rows dropped from about 40 to 1.8 per frame in the 6000 frame test.

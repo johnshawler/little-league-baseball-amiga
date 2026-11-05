@@ -85,7 +85,7 @@ static void rt_sync(uint64_t dots){
         if(p->frame_done && p->ar_on){      /* the scene log of the finished frame becomes the planar picture */
             p->ar_on=0; ar_end_frame(&nes,&ar_out);
 #ifndef AMIGA
-            if(rt_ppu_check){ static uint8_t fbx[240*256]; if(ar_hw_enable) ar_expand_hw(&ar_out,fbx); else ar_expand(&ar_out,fbx);
+            if(rt_ppu_check){ static uint8_t fbx[240*256]; if(ar_hw_enable){ extern int ar_used_viol; ar_used_viol=0; ar_expand_hw(&ar_out,fbx); if(ar_used_viol){ fprintf(stderr,"ARENDER FAIL: frame %u: pixel (row %d x %d) shows a palette entry that the region's used mask does not contain\n",p->frame,(ar_used_viol-1)>>8,(ar_used_viol-1)&255); exit(5); } } else ar_expand(&ar_out,fbx);
                 { int cov[240]; for(int y=0;y<240;y++) cov[y]=0;     /* display state: every line is covered by exactly one region and carries the palette / mask of the reference at the start of the line */
                   for(int i=0;i<ar_out.nreg;i++){ const ArRegion*r=&ar_out.reg[i]; for(int y=r->y0;y<=r->y1;y++){ cov[y]++;
                       if(memcmp(r->pal,nes_ref.ppu.linepal[y],32) || r->gray!=(nes_ref.ppu.linemask[y]&1) || r->emph!=((nes_ref.ppu.linemask[y]>>5)&7)){ fprintf(stderr,"ARENDER FAIL: frame %u line %d: region %d palette/mask differs from the reference\n",p->frame,y,i); exit(5); } } }

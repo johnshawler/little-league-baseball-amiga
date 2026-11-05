@@ -23,7 +23,7 @@ static uint8_t ar_planes[5][240*AR_STRIDE] __attribute__((aligned(4)));
 /* ---- persistent background bitmaps ------------------------------------------------------------------------------------------------------ */
 typedef struct {
     int valid; uint8_t bank, mirror; uint32_t stamp;
-    uint32_t bv[4][32]; uint8_t bvok[4][32];          /* write-counter sum of the source rows the bitmap tile row was built from */
+    uint32_t bv[4][32]; uint8_t bvok[4][32]; uint16_t um[4][32];          /* write-counter sum of the source rows the bitmap tile row was built from */
 } ArCfg;
 static ArCfg cfgs[AR_MAX_CFG];
 ArHw ar_hw; int ar_hw_enable;
@@ -62,16 +62,19 @@ static void ensure_trow(Nes*n,int c,int nt,int cy){
     uint32_t sum=p->ntv[(base+cy*32)>>5]+p->ntv[(base+0x3C0+(cy>>2)*8)>>5];
     if(g->bvok[nt][cy] && g->bv[nt][cy]==sum) return;
     const uint8_t*chr=n->map.chr+(uint32_t)g->bank*4096u; int ny=nt>>1, nx=nt&1;
+    uint16_t um=0;
     for(int x=0;x<32;x++){
         int ti=p->nt[base+cy*32+x]; int at=p->nt[base+0x3C0+(cy>>2)*8+(x>>2)]; int pb=(at>>(((cy&2)<<1)|(x&2)))&3;
+        { uint8_t p0=0,p1=0,p2=0,p3=0; for(int fy=0;fy<8;fy++){ uint8_t a=chr[ti*16+fy], b=chr[ti*16+fy+8]; p0|=(uint8_t)~(a|b); p1|=(uint8_t)(a&~b); p2|=(uint8_t)(~a&b); p3|=(uint8_t)(a&b); }
+          if(p0) um|=1; if(p1) um|=(uint16_t)(1u<<(4*pb+1)); if(p2) um|=(uint16_t)(1u<<(4*pb+2)); if(p3) um|=(uint16_t)(1u<<(4*pb+3)); }
         for(int fy=0;fy<8;fy++){
             int row=ny*256+cy*8+fy, col=nx*32+x;
             uint8_t v0=chr[ti*16+fy], v1=chr[ti*16+fy+8], v2=(pb&1)?0xFF:0, v3=(pb&2)?0xFF:0;
             BMP(c,0,row)[col]=v0; BMP(c,1,row)[col]=v1; BMP(c,2,row)[col]=v2; BMP(c,3,row)[col]=v3;
-            if(col<40){ BMP(c,0,row)[col+64]=v0; BMP(c,1,row)[col+64]=v1; BMP(c,2,row)[col+64]=v2; BMP(c,3,row)[col+64]=v3; }
+            if(col<32){ BMP(c,0,row)[col+64]=v0; BMP(c,1,row)[col+64]=v1; BMP(c,2,row)[col+64]=v2; BMP(c,3,row)[col+64]=v3; }
         }
     }
-    g->bv[nt][cy]=sum; g->bvok[nt][cy]=1;
+    g->bv[nt][cy]=sum; g->bvok[nt][cy]=1; g->um[nt][cy]=um;
 }
 
 /* ---- scene log --------------------------------------------------------------------------------------------------------------------------- */
@@ -198,8 +201,8 @@ static void render_region(Nes*n,const ArRegion*r){
 
 /* ---- stage 2b: display format for the dual playfield (see arender.h) -------------------------------------------------------------------- */
 static void hw_select(void){
-    unsigned set=(unsigned)ar_hw.sel*(3u*4*240*AR_STRIDE);
-    ar_hw.spr=hw_xsets+set; ar_hw.xpf1=ar_hw.spr+4*240*AR_STRIDE; ar_hw.xpf2=ar_hw.xpf1+4*240*AR_STRIDE;
+    unsigned set=(unsigned)ar_hw.sel*(3u*AR_LAYB);
+    ar_hw.spr=hw_xsets+set+4; ar_hw.xpf1=hw_xsets+set+AR_LAYB+4; ar_hw.xpf2=hw_xsets+set+2*AR_LAYB+4;
 }
 void ar_hw_shown(void){ ar_hw.sel^=1; hw_select(); }
 long ar_st_kind[3];
@@ -221,10 +224,11 @@ static void hw_build_lists(int h){
     sl_valid=1; sl_h=h;
 }
 /* the sprite layer line y of the background region s (cover of the clipped background, then the sprites) */
+static uint32_t hw_used;
 static void hw_line(Nes*n,const ArRegion*s,int y){
     int cl=s->bg_en?(s->min_bg>256?256:s->min_bg):256, clb=cl>>3, used=0;
     uint8_t*L0=AR_SPR(0,y),*L1=AR_SPR(1,y),*L2=AR_SPR(2,y),*L3=AR_SPR(3,y);
-    if(clb){ ar_set(L2,0xFF,(unsigned)clb); used=1; }                    /* value 4 = backdrop colour, covers the background pixels */
+    if(clb){ ar_set(L2,0xFF,(unsigned)clb); used=1; hw_used|=1; }                    /* value 4 = backdrop colour, covers the background pixels */
     if(y>=1 && s->sp_en && s->min_sp<256){
         int h=s->large?16:8; if(!sl_valid || sl_h!=h) hw_build_lists(h);
         int e=y-1, cnt=sl_cnt[e];
@@ -257,6 +261,7 @@ static void hw_line(Nes*n,const ArRegion*s,int y){
                     L0[bb]=(uint8_t)((L0[bb]&~D)|(sv0&D)); L1[bb]=(uint8_t)((L1[bb]&~D)|(sv1&D));
                     L2[bb]=(uint8_t)((L2[bb]&~D)|((pal&1)?D:0)); L3[bb]=(uint8_t)((L3[bb]&~D)|((pal&2)?D:0));
                     used=1;
+                    { uint32_t pm=0; if(sv0&D&~sv1) pm|=2; if(sv1&D&~sv0) pm|=4; if(sv0&sv1&D) pm|=8; hw_used|=pm<<(16+4*pal); }
                 }
             }
         }
@@ -265,8 +270,8 @@ static void hw_line(Nes*n,const ArRegion*s,int y){
 }
 /* a scene region -> display regions */
 static void hw_region(Nes*n,const ArRegion*r){
-    if(r->exact){ ArRegion e=*r; e.kind=AR_EXACT; hw_add(&e); return; }
-    if(!r->rend){ ArRegion e=*r; e.kind=AR_BLANK; hw_add(&e); return; }
+    if(r->exact){ ArRegion e=*r; e.kind=AR_EXACT; e.used=~0u; hw_add(&e); return; }
+    if(!r->rend){ ArRegion e=*r; e.kind=AR_BLANK; e.used=~0u; hw_add(&e); return; }
     uint16_t vl=r->vl; int y=r->y0;
     int bank=r->bgpat? r->chr_hi : r->chr_lo; int c=get_cfg(bank,r->mirror);
     while(y<=r->y1){
@@ -279,9 +284,11 @@ static void hw_region(Nes*n,const ArRegion*r){
             if(nrow!=row+(ye+1-y) || (nv&0x41F)!=xb) break;
             v2=nv; ye++;
         }
-        s.y1=(int16_t)ye;
+        s.y1=(int16_t)ye; hw_used=0;
         for(int t=row>>3; t<=(row+(ye-y))>>3; t++){ int ny=row>>8; ensure_trow(n,c,ny*2,t&31); ensure_trow(n,c,ny*2+1,t&31); }
+        for(int t=row>>3; t<=(row+(ye-y))>>3; t++){ int ny=row>>8; hw_used|=cfgs[c].um[ny*2][t&31]|cfgs[c].um[ny*2+1][t&31]; }
         for(int yy=y;yy<=ye;yy++) hw_line(n,&s,yy);
+        s.used=hw_used;
         hw_add(&s);
         vl=(uint16_t)((incy1(v2)&~0x041F)|r->tx); y=ye+1;
     }
@@ -302,7 +309,7 @@ void ar_flush_nt(Nes*n){
             }
             xdone[y]=1;
         }
-        disp[i].kind=AR_EXACT;
+        disp[i].kind=AR_EXACT; disp[i].used=~0u;
     }
 }
 void ar_hw_palette(const ArRegion*r,uint8_t out[32]){
@@ -310,6 +317,7 @@ void ar_hw_palette(const ArRegion*r,uint8_t out[32]){
     for(int i=0;i<16;i++) out[i]=(i&3)?r->pal[i]:r->pal[0];
     for(int i=16;i<32;i++) out[i]=(i&3)?r->pal[i]:r->pal[0];
 }
+int ar_used_viol;
 void ar_expand_hw(const ArFrame*f,uint8_t*fb){
     for(int i=0;i<f->nreg;i++){
         const ArRegion*r=&f->reg[i];
@@ -324,6 +332,7 @@ void ar_expand_hw(const ArFrame*f,uint8_t*fb){
             }
             if(v2) idx=(v2&3)?16+v2:0; else idx=(v1&3)?v1:0;
             fb[y*256+x]=(uint8_t)idx;
+            if(r->kind==AR_BG && !((r->used>>idx)&1)) ar_used_viol=(y<<8|x)+1;
         }
     }
 }

@@ -25,7 +25,7 @@
 #define AR_MAX_REGIONS 240          /* one region per line at most */
 #define AR_MAX_PAL     16
 #define AR_MAX_CFG     4           /* persistent background bitmaps (one per BG CHR bank / mirroring configuration), LRU */
-#define AR_BROW        104         /* bytes per bitmap row: 64 (512 pixels) + 40 guard bytes = copy of bytes 0..39, so a 256 pixel window plus the extra fetch of the fine scroll never wraps */
+#define AR_BROW        96          /* bytes per bitmap row: 64 (512 pixels) + 32 guard bytes = copy of bytes 0..31: the 17-word window of the display reads up to byte 95 */
 #define AR_BROWS       512         /* rows per bitmap: 4 logical nametables x 256 (32 tile rows of 8) */
 
 /* a run of whole lines [y0,y1] drawn from the same configuration; line y0 starts with v = vl (coarse X/Y, nametable, fine Y: bits as the PPU's v register),
@@ -49,6 +49,7 @@ typedef struct {
     uint8_t  gray, emph;           /* mask bits */
     uint8_t  exact;                /* 1: the lines of this entry are exact chunky rows (nes.ppu.fb, converted to the planes by ar_end_frame); only the display state (palette, mask) is meaningful */
     uint8_t  pal[32];              /* palette RAM at the start of the region (palette writes inside a region split it) */
+    uint32_t used;                 /* stage 2b: bit e = palette RAM entry e can occur in the output pixels of the region (0 = backdrop, 16+u = sprite value u); AR_EXACT / AR_BLANK: all bits */
 } ArRegion;
 
 
@@ -83,7 +84,8 @@ extern ArHw ar_hw;
 #define AR_XPF1(plane,row)    (ar_hw.xpf1 + (((unsigned)(plane)*240u+(row))*AR_STRIDE))
 #define AR_XPF2(plane,row)    (ar_hw.xpf2 + (((unsigned)(plane)*240u+(row))*AR_STRIDE))
 void ar_hw_setmem(void *chip);          /* optional: place the buffers (AR_HW_BYTES, 4-byte aligned) in chip RAM; default: static arrays */
-#define AR_HW_BYTES (AR_MAX_CFG*4*AR_BROWS*AR_BROW + 2*3*4*240*AR_STRIDE)
+#define AR_LAYB (4 + 4*240*AR_STRIDE)   /* one sprite / exact playfield block: 4 spare bytes in front (the display fetches a hidden pad word before row 0), then 4 planes x 240 rows */
+#define AR_HW_BYTES (AR_MAX_CFG*4*AR_BROWS*AR_BROW + 2*3*AR_LAYB)
 extern int ar_hw_enable;                /* 1: ar_end_frame produces the stage 2b display format (regions AR_BG / AR_EXACT / AR_BLANK) instead of the 5 planes */
 void ar_hw_shown(void);                 /* the platform calls this after it has switched the display to the picture of the last ar_end_frame: the next frame is composed into the other set of sprite/exact buffers (a frame that is not shown keeps composing into the same set) */
 void ar_flush_nt(Nes *n);               /* PPU model: a name table byte is about to change during a displayed frame */
