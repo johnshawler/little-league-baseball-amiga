@@ -28,8 +28,15 @@ static void load_mapper_ptrs(void){
 static void trace_c(char t,uint16_t a,uint8_t v,uint64_t cyc){ if(rt.trace_hook){ rt.cyc=cyc; rt.trace_hook(t,a,v,-1); } }
 /* trace records for the assembler fast paths (host verification builds only: rt_x.s -DXRT_TRACE) */
 void xrt_trace_c(uint32_t type, uint32_t addr, uint32_t val, int32_t d5, int32_t adj){ if(rt.trace_hook) trace_c((char)type,(uint16_t)addr,(uint8_t)val,rt.limit-(int64_t)d5+adj); }
+extern long xrt_cnt_rd[12], xrt_cnt_wr[12], xrt_hist_rd[256], xrt_hist_wr[256];       /* XRT_STATS: accesses that reach the C helpers: PPU registers 0..7, 8 = APU/pads, 9 = $4014, 10 = $4016, 11 = other / mapper */
+#ifdef PPU_COUNT
+#define CNTX2(x) ((x)++)
+#else
+#define CNTX2(x) ((void)0)
+#endif
+static inline int cnt_idx(uint16_t a){ return a<0x2000?11 : a<0x4000 ? (a&7) : a==0x4014?9 : a==0x4016?10 : a<0x4020?8 : 11; }
 uint32_t xrt_rd_c(uint32_t addr, int32_t d5, int32_t adj){
-    uint64_t c=rt.limit-(int64_t)d5+adj; uint16_t a=(uint16_t)addr;
+    uint64_t c=rt.limit-(int64_t)d5+adj; uint16_t a=(uint16_t)addr; CNTX2(xrt_cnt_rd[cnt_idx(a)]); CNTX2(xrt_hist_rd[a>>8]);
     rt.openbus=xrt_ctx.pad;
     uint8_t v=rt_io_rd(a,c);
     if(a>=0x2000 && a<0x8000) trace_c('R',a,v,c);
@@ -42,7 +49,7 @@ extern int rt_ppu_check;
 #define XCHK rt_ppu_check
 #endif
 int32_t xrt_wr_c(uint32_t addr, uint32_t val, int32_t d5, int32_t adj){
-    uint64_t c=rt.limit-(int64_t)d5+adj; uint16_t a=(uint16_t)addr;
+    uint64_t c=rt.limit-(int64_t)d5+adj; uint16_t a=(uint16_t)addr; CNTX2(xrt_cnt_wr[cnt_idx(a)]); CNTX2(xrt_hist_wr[a>>8]);
     if(a>=0x8000){          /* mapper write (the fifth of a serial load, or a reset): no layers in between */
         trace_c('W',a,(uint8_t)val,c);
         if(mmc1_write_ppu_effect(&nes.map,a,(uint8_t)val)){ ppu_sync_rt(3*c+4); nes.ppu.ar_wr=1; }
@@ -138,7 +145,13 @@ void xrt_dbg_c(uint32_t pc, int32_t d5, int32_t tot){ (void)pc; (void)d5; (void)
  * again; returns the number of cycles to skip (a whole number of iterations, all of which would have read "not yet"). */
 extern int rt_fast_ppu;
 uint64_t ppu_predict_hit(Nes *n);
-int32_t xrt_skip_c(int32_t kind, int32_t d5){
+extern long xrt_cnt_skip, xrt_cnt_skip_taken;
+#ifdef PPU_COUNT
+#define CNTX(x) ((x)++)
+#else
+#define CNTX(x) ((void)0)
+#endif
+int32_t xrt_skip_c(int32_t kind, int32_t d5){ CNTX(xrt_cnt_skip);
     Ppu *p=&nes.ppu; uint64_t now=rt.limit-(int64_t)d5;
     if(!rt_fast_ppu) return 0;
     ppu_sync_rt(3*now+5);
@@ -164,5 +177,5 @@ int32_t xrt_skip_c(int32_t kind, int32_t d5){
     uint64_t n=(cmin-c0+Li-1)/Li;
     if(rt.limit<=now+64) return 0;
     uint64_t nmax=(rt.limit-now-64)/Li; if(n>nmax) n=nmax;
-    return (int32_t)(n*Li);
+    CNTX(xrt_cnt_skip_taken); return (int32_t)(n*Li);
 }

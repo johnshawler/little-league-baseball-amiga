@@ -5,6 +5,14 @@
 #endif
 #include "nes.h"
 #include "arender.h"
+long ppu_cnt_piece, ppu_cnt_run, ppu_cnt_hitfind, ppu_cnt_first, ppu_cnt_batch, ppu_cnt_blines, ppu_cnt_trans;      /* statistics (host builds with -DPPU_COUNT, printed by XRT_STATS) */
+#ifdef PPU_COUNT
+#define CNT(x) ((x)++)
+#define PPU_COUNTING 1
+#else
+#define CNT(x) ((void)0)
+#define PPU_COUNTING 0
+#endif
 Nes nes;
 int ppu_ar_enable;
 #define P (&n->ppu)
@@ -350,6 +358,7 @@ static void lt_build(Nes*n){
     memset(d,0,sizeof d);
     for(int i=0;i<64;i++){ int sy=p->oam[i<<2]; if(sy>=240) continue; int e=sy+h; if(e>240) e=240; d[sy]++; d[e]--; }
     int c=0; for(int l=0;l<240;l++){ c+=d[l]; p->lt_cnt[l]=(uint8_t)c; }
+    { int nx=240; p->lt_n8[240]=p->lt_n8[241]=240; for(int l=239;l>=0;l--){ if(p->lt_cnt[l]>=8) nx=l; p->lt_n8[l]=(uint8_t)nx; } }     /* next evaluation line with 8 or more sprites */
     memset(p->lt_ocx,0xFF,sizeof p->lt_ocx);
     p->lt_valid=1; p->lt_full=0; p->lt_large=p->large; p->oam_dirty=0;
 }
@@ -549,7 +558,7 @@ static void draw_range(Nes*n,int L,int x0,int x1){
     }
 }
 /* sprite 0 against the background in the dots a..c1 (cx, 1..256) of the line the context belongs to: first hit dot or 0 */
-static int hit_find(Ppu*p,const FpCtx*c,int a,int c1){
+static int hit_find(Ppu*p,const FpCtx*c,int a,int c1){ CNT(ppu_cnt_hitfind);
     if(!c->s0) return 0;
     int sx=c->spx[0]; uint8_t lo=c->slo[0], hi=c->shi[0]; if(!(lo|hi)) return 0;
     int cxa= sx+1>a ? sx+1 : a, cxb= sx+8<c1 ? sx+8 : c1; if(cxb>255) cxb=255;
@@ -694,7 +703,7 @@ static void batch_segment(Nes*n,int a,int b){
 #endif
     lt_ensure(n); if(!p->lt_full) lt_build_full(n);
     int sprites_on = p->sp_en && p->min_sp<256;
-    if(!p->spovf){ for(int y=a;y<=b;y++) if(p->lt_cnt[y]>=8){ int o=lt_ovf_cx(n,y); if(o){ p->spovf=1; break; } } }
+    if(!p->spovf){ for(int y=p->lt_n8[a];y<=b;y=p->lt_n8[y+1]){ int o=lt_ovf_cx(n,y); if(o){ p->spovf=1; break; } } }
     for(int y=a;y<=b;y++){
         int cnt= sprites_on ? (y==a ? cc->nspr : p->lt_cnt[y-1]) : 0;       /* output line y is drawn from evaluation line y-1 (y>=1; line 0 has no sprites) */
         if(y==0) cnt=0;
@@ -819,7 +828,7 @@ static void fp_line(Nes*n,int L){
 
 /* ---- one piece: the dots a..c1 (1 <= a <= c1 <= 340) of line L; parameters constant, no pending update ---------------------------------- */
 static __attribute__((noinline)) void fp_piece(Nes*n,int L,int a,int c1){
-    Ppu*p=P; int rend=p->rend;
+    Ppu*p=P; int rend=p->rend; CNT(ppu_cnt_piece);
     int px=p->draw;                              /* produce chunky pixels in this piece */
 #ifdef FP_FASTLINE
     if(p->ar_on && L<240){                       /* arender: a line is a plain region when no access lands in dots 1..255 and none in the line before at dots >= 261 (prefetch) */
@@ -886,7 +895,7 @@ static __attribute__((noinline)) void fp_piece(Nes*n,int L,int a,int c1){
 }
 
 static void fp_first_cycle(Nes*n){
-    Ppu*p=P; p->dots++; p->cx=0;
+    Ppu*p=P; CNT(ppu_cnt_first); p->dots++; p->cx=0;
     if(++p->line>260){ p->line=-1; p->sp_count=0; }
     if(p->line==241 && !ppu_noinput) nes_input_poll();
     if(p->line<240){ if(p->line==-1){ p->spovf=0; p->sp0hit=0; AR_BEGIN(n); } }
@@ -898,10 +907,10 @@ static void fp_first_cycle(Nes*n){
 /* Advance to `target` dots, or until an event the board has to look at (frame completed, NMI line changed). */
 uint64_t ppu_predict_hit(Nes*n);
 void ppu_fp_run(Nes*n,uint64_t target){
-    Ppu*p=P; uint8_t nmi0=p->nmi_level;
+    Ppu*p=P; CNT(ppu_cnt_run); uint8_t nmi0=p->nmi_level;
     while(p->dots<target){
         int L=p->line, c=p->cx; uint64_t room=target-p->dots;
-        int trans = p->need_update || p->upd_delay || p->rend!=p->rend_prev;
+        int trans = p->need_update || p->upd_delay || p->rend!=p->rend_prev; if(trans) CNT(ppu_cnt_trans);
         if(c==340){
             if(!trans && room>=341){
                 int m=0;
@@ -927,12 +936,12 @@ void ppu_fp_run(Nes*n,uint64_t target){
                      * run: no access lands inside it, so the parameters are constant); the moment inside the run is not observable */
                     if(p->rend){
                         lt_ensure(n);
-                        if(!p->spovf){ for(int l=L+1;l<=L+mm;l++) if(p->lt_cnt[l]>=8){ if(lt_ovf_cx(n,l)){ p->spovf=1; break; } } }
+                        if(!p->spovf){ for(int l=p->lt_n8[L+1];l<=L+mm;l=p->lt_n8[l+1]){ if(lt_ovf_cx(n,l)){ p->spovf=1; break; } } }
                         m=mm;
                         if(!p->sp0hit){ int sy=p->oam[0], h=p->large?16:8; if(sy<240){ int w0=sy, w1=sy+h; if(w1>239) w1=239;     /* sprite-0 window: lines sy .. sy+h are processed one by one */
                             if(L+1<=w1 && w0<L+1+m){ m = w0>L+1 ? w0-(L+1) : 0; } } }
                     } else m=mm;
-                    if(m>0){
+                    if(m>0){ CNT(ppu_cnt_batch); if(PPU_COUNTING) ppu_cnt_blines+=m;
 #ifdef FP_FASTLINE
                         if(p->ar_on){ if(p->rend) ar_whole(n,L+1,L+m); else for(int yy=L+1;yy<=L+m;yy++) ar_blank(n,yy); }
 #endif

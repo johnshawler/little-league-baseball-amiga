@@ -161,6 +161,23 @@ static void mem_write(uint16_t a, uint8_t v, uint64_t c){
 uint8_t rt_io_rd(uint16_t a, uint64_t c){ uint8_t v=mem_read(a,c); rt.openbus=v; return v; }
 void    rt_io_wr(uint16_t a, uint8_t v, uint64_t c){ mem_write(a,v,c); rt.openbus=v; }
 
+typedef uint32_t __attribute__((may_alias)) u32m;
+/* OAM DMA block: n long words from src to oam at byte offset oa (multiple of 4, wraps at 256); byte 2 of every sprite loses its bits 2..4; returns the OR of the changed bits */
+static __attribute__((noinline)) uint8_t oam_copy_aligned(const uint8_t*src,uint8_t*oam,unsigned oa,unsigned n){
+#if __BYTE_ORDER__==__ORDER_BIG_ENDIAN__
+    const uint32_t am=0xFFFFE3FFu;
+#else
+    const uint32_t am=0xFFE3FFFFu;
+#endif
+    const u32m*s=(const u32m*)src; u32m*o=(u32m*)(oam+oa); uint32_t dl=0; unsigned first=(256-oa)>>2; if(first>n) first=n;
+    unsigned rest=n-first;
+    for(unsigned k=0;k<first;k++){ uint32_t w=s[k]&am; dl|=o[k]^w; o[k]=w; }
+    s+=first; o=(u32m*)oam;
+    for(unsigned k=0;k<rest;k++){ uint32_t w=s[k]&am; dl|=o[k]^w; o[k]=w; }
+    return (uint8_t)(dl|dl>>8|dl>>16|dl>>24);
+}
+long xrt_cnt_rd[12], xrt_cnt_wr[12], xrt_hist_rd[256], xrt_hist_wr[256];
+long rt_dma_fast, rt_dma_slow, rt_dma_cyc_slow, xrt_cnt_skip, xrt_cnt_skip_taken;
 static void process_dma(uint16_t read_addr){
     rt.cyc++; if(read_addr!=0x4016&&read_addr!=0x4017) (void)mem_read(read_addr,rt.cyc); rt.need_halt=0;
     int counter=0; uint8_t rv=0, ra=0; int fast=-1;     /* fast: -1 undecided, 0 per-write path, 1 block path (see below) */
@@ -176,11 +193,15 @@ static void process_dma(uint16_t read_addr){
                 Ppu*p=&nes.ppu; int rem=(0x200-counter)*3+6;
                 fast = (!rt.trace_hook && !RT_CHK && rt.dma_page<0x20 && !p->need_update && !p->upd_delay &&
                         (!p->rend || (p->line>=240 && (p->line-240)*341+p->cx+rem < 21*341))) ? 1 : 0;
+#ifdef PPU_COUNT
+                if(fast) rt_dma_fast++; else rt_dma_slow++;
+#endif
                 if(fast && rt.dma_on){   /* the remaining pairs of get/put cycles in one go: bytes ra..255 of the RAM page into OAM at the OAM address, 2 cycles each */
                     const uint8_t*src=nes.ram+((rt.dma_page<<8)&0x7FF); unsigned oa=p->oamaddr; uint8_t*oam=p->oam; unsigned i=ra;
                     if(p->ar_on && p->line>=0 && p->line<240){ ar_flush(&nes,1); p->ar_wr=1; }
                     uint8_t diff=0;
                     for(;i<256 && (oa&3);i++){ uint8_t b=src[i]; if((oa&3)==2) b&=0xE3; diff|=(uint8_t)(oam[oa]^b); oam[oa]=b; oa=(oa+1)&255; }
+                    if(!(oa&3) && !(i&3)){ diff|=oam_copy_aligned(src+i,oam,oa,(256-i)>>2); oa=(oa+(256-i))&255; i=256; }
                     for(;i+4<=256;i+=4,oa=(oa+4)&255){ uint8_t b0=src[i],b1=src[i+1],b2=src[i+2]&0xE3,b3=src[i+3]; diff|=(uint8_t)((oam[oa]^b0)|(oam[oa+1]^b1)|(oam[oa+2]^b2)|(oam[oa+3]^b3)); oam[oa]=b0; oam[oa+1]=b1; oam[oa+2]=b2; oam[oa+3]=b3; }
                     for(;i<256;i++){ uint8_t b=src[i]; if((oa&3)==2) b&=0xE3; diff|=(uint8_t)(oam[oa]^b); oam[oa]=b; oa=(oa+1)&255; }
                     p->oamaddr=(uint8_t)oa; if(diff) p->oam_dirty=1; p->openbus=src[255]; rt.cyc+=2u*(256-ra); rt.dma_on=0; rt_sync(3*rt.cyc+4);
@@ -190,7 +211,11 @@ static void process_dma(uint16_t read_addr){
         else { if(read_addr!=0x4016&&read_addr!=0x4017) (void)mem_read(read_addr,rt.cyc); }
     }
 }
+long rt_cnt_busrd;
 uint8_t bus_rd(uint16_t a){
+#ifdef PPU_COUNT
+    rt_cnt_busrd++;
+#endif
     if(rt.need_halt) process_dma(a);
     rt.cyc++;
     uint8_t v=mem_read(a,rt.cyc);

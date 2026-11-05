@@ -69,6 +69,7 @@ typedef struct {
     FpCtx    fc[2]; int fcur;                     /* fast model: fetch contexts of the line being output (fc[fcur]) and of the next line */
     uint32_t ntver_all;               /* fast model: write counter of the whole name table memory */
     uint32_t ntv[64];                 /* fast model: write counters of the 32-byte rows of the two physical name tables (a row of the background cache is valid while its source rows are unchanged) */
+    uint8_t  lt_n8[242];              /* next evaluation line >= l with 8 or more sprites (240: none) */
     uint8_t  lt_cnt[240];             /* fast model: sprites in range per evaluation line (saturated at 255) */
     uint8_t  lt_idx[240][8];          /* first 8 sprites (OAM index) in range per evaluation line (valid when lt_full) */
     int16_t  lt_ocx[240];             /* dot (cx) at which the sprite overflow flag is set on this evaluation line: 0 none, -1 not computed yet */

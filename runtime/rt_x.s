@@ -89,7 +89,24 @@ rt_slow:
 .endif
 .endm
 rt_rd:
-	cmp.w #0x4016,d7
+	tst.w d7
+	bmi.s 3f                   /* $8000-$FFFF: ROM through the windows (a1 = $8000.. window, a6 = fixed bank), no side effects */
+	cmp.w #0x2000,d7
+	bcc.s 2f
+	and.l #0x7FF,d7            /* RAM (and its mirrors) */
+	move.b (0,a0,d7.l),d6
+	move.b d6,rt+194           /* open bus */
+	rts
+3:	and.l #0xFFFF,d7
+	cmp.w #0xC000,d7
+	bcc.s 4f
+	move.b (-0x8000,a1,d7.l),d6
+	move.b d6,rt+194
+	rts
+4:	move.b (-0x8000,a6,d7.l),d6
+	move.b d6,rt+194
+	rts
+2:	cmp.w #0x4016,d7
 	beq rt_rd_joy0
 	cmp.w #0x4017,d7
 	beq rt_rd_joy1
@@ -142,7 +159,13 @@ rt_rd_joy1:
 	TRACE_CALL 82
 	rts
 rt_wr:
-	cmp.w #0x8000,d7
+	cmp.w #0x2000,d7
+	bcc.s 1f
+	and.l #0x7FF,d7            /* RAM */
+	move.b d6,(0,a0,d7.l)
+	move.b d6,rt+194           /* open bus */
+	rts
+1:	cmp.w #0x8000,d7
 	bcs.s rt_wr_gen
 rt_wr_mmc1:
 .ifdef XRT_CHECK

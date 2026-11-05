@@ -108,3 +108,20 @@ What changed (all exact: `ARENDER=2 PPU_CHECK=1` host, translated qemu runs, DRA
 * `ar_log_region`: the vl of the line after the last region is kept incrementally (was quadratic); `ar_out.reg` is written directly (no per-frame region copy); long word `ar_set/ar_cpy/ar_cmp`.
 * `hw_region`: the split into row-contiguous segments is closed form (no per line `incy1` loop; `-DAR_VERIFY` checks it against the loop).
 * Remaining arender cost: sprite composition of lines with moving sprites (`hw_line`), chip RAM writes of scrolled-in tiles (`ensure_trow`), and the encoding of long runs of exact rows.
+
+### Time model / PPU model round (FS-UAE PAL, fast RAM, profile page, same window of 700 ticks after the snapshots at frames 100 / 1200 / 2000)
+Fresh profile (object level, ms per game frame) at 59ba1a1: menu ppu_ref 11.4, rt_core 3.7, arender 1.7; line-up ppu_ref 8.5, arender 5.6, rt_core 5.0, rt_x 3.0; field arender 7.0, rt_core 6.1, ppu_ref 4.5, rt_x (c+s) 6.6, mapper 1.3.
+Where the time was (found with line level profiles of a `-g` build, `addr2line` on the 32 byte sample bins):
+* menu: one loop of `ppu_fp_run` took 14 % of all samples (3.6 ms per frame): the batch path searched the next line with 8 or more sprites by scanning `lt_cnt[]` over the whole batch (up to 240 lines) every time a batch started and the overflow flag was still clear (always, in the menu).  Now `lt_n8[]` (next line with 8 or more sprites, built with the line table) is followed instead.
+* OAM DMA block copy: the byte/long mix loop spilled registers in the huge `bus_rd` frame (0.6 ms per frame); now a small noinline long word routine with the attribute mask.
+* field / line-up: 100-130 reads per frame through `(zp),y` into ROM / RAM and the RAM stores through `(zp),y` took the C helper chain (`xrt_rd_c` -> `rt_io_rd` -> `mem_read`, about 250 cycles each).  `rt_rd` / `rt_wr` in `rt_x.s` now handle RAM and ROM (window / fixed bank) in assembler (about 20 cycles); PPU/APU/mapper accesses are unchanged.
+* diagnostics for the next round: `-DPPU_COUNT` + `XRT_STATS=1` print C helper accesses by register and 256 byte page, fp_piece / ppu_fp_run / hit_find / first-cycle / batch counts, skip calls, bus_rd calls, DMA block copies.  Per frame the translated program makes only 45-110 `fp_piece` calls, 35-90 `ppu_fp_run` calls, 1-20 `hit_find` calls, about 50 `bus_rd` calls (12 interpreted instructions) and 150-200 accesses through the C helpers; the 5-7 ms per frame of `ppu_ref.o` in the menu / line-up are therefore about 1500 cycles per piece, not a large number of calls.
+
+| game frames in the same 700 tick window | menu | line-up | field |
+|---|---|---|---|
+| 59ba1a1 | 450 | 333 | 257 |
+| this round | 552 | 365 | 297 |
+| ms per game frame (window / frames) | 25.9 -> 21.1 | 35.0 -> 31.9 | 45.3 -> 39.2 |
+| ppu_ref.o / rt_core.o / rt_x(+_s).o (ms per frame) | 11.4->7.2 / 3.7->3.2 / 1.7->1.6 | 8.5->7.6 / 5.0->3.5 / 3.0->2.6 | 4.5->3.9 / 6.1->3.5 / 6.6->4.9 |
+| arender.o + display_ar2.o (ms per game frame, unchanged code) | 1.6 -> 1.7 | 5.9 -> 5.9 | 7.0 -> 6.6 |
+The arender figure is per game frame; it only runs on drawn frames (every 3rd-4th), i.e. 15-20 ms per drawn frame in the line-up / field.
