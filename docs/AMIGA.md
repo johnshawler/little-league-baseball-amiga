@@ -361,3 +361,37 @@ Speed (same snapshots, 5 planes, PAL, profile window ticks 1500..7000, FS-UAE de
 | total ms/frame | 466 -> 252 | 500 -> 268 | 590 -> 330 |
 
 Fast RAM gives a factor 1.85 everywhere (code and data accesses no longer wait for chip-RAM slots); the PPU model (70-80 % of the time) is the remaining problem.
+
+## 17. Round 5: state at a2a2288 (closed-form PPU, APU cue mode, fast RAM, 5 planes)
+
+**Verification** (FS-UAE A1200 + 8 MB fast RAM, KS 3.1; clean checkouts; base a2a2288 = d441c40 + the cue-mode chip-RAM fix): host trace comparison IDENTICAL over 2,556,952 records (6000 frames); `run_tests.sh` scenes **14 of 14 pixel-exact** (PAL + NTSC; run at d441c40);
+the HDF (`tools/build_hdf.sh`) boots to the title (frame 30) and menu (frame 100) with 0 differing pixels and the keyboard (Return, Down) reaches reference frames 45 and 151 with 0 differing pixels, PAL and NTSC (a2a2288 image).
+Delivered image: `build/llb_fastram.hdf` (not in git), SHA-256 `3e9199ab1befa93bc5b63b6de89edfefc1b6a3b175cf425ed1ac269aaf32bbbd`.
+
+**Audio in cue mode (default)** replaces the PCM path of section 7: no samples are produced; once per frame `apu_cue_frame()` derives from the APU registers/counters at the end of the frame, for each NES channel, a Paula period, a volume and a looping
+waveform (`docs/APU.md`, "Cue mode"), and `audio_cue_apply()` writes only the registers that changed: pulse 1 -> Paula 0 (left), pulse 2 -> 1 (right), noise -> 2 (right), triangle -> 3 (left). The waveforms are built by the APU module in fast RAM and
+copied into a chip RAM pool on first use (Paula cannot read fast RAM; before commit a2a2288 the fast-RAM build was silent). The oscillators free-run (no phase lock to the NES), so what can be checked is the spectrum, not the waveform:
+`tools/apu_cuesim.c` + `tools/apu_cuecmp.py` simulate Paula against `apu_render8` (spectral magnitude correlation median 0.90, loudness median -0.03 dB, `docs/APU.md`). `tests/amiga/audio_cmp.py` (waveform correlation of a recording with the exact PCM) therefore only applies to the
+`-DAUDIO_EXACT` build; for the cue build the FS-UAE check is: recording of the stopped frame 1300 (`-DSTOP_AT=1300`): not silent, rms 2318 / peak 9070 (16-bit units), dominant frequency 219 Hz (a held tone of the stopped frame), and the DMA state follows the APU registers.
+`audio.c`'s underrun/ring logic is only used in the exact build.
+
+**Speed and profile at d441c40** (same method: snapshots of the play script, PAL, 5 planes, fast RAM, ticks 1500..7000, FS-UAE default timing):
+
+| | menu (100) | line-up (1200) | field (2000) |
+|---|---|---|---|
+| frames in 5500 ticks | 3684 | 1081 | 1243 |
+| **speed** (previous round) | **67 %** (7.3 %) | **19.7 %** (6.8 %) | **22.6 %** (5.1 %) |
+| translated 6502 code ms/frame | 1.8 | 8.7 | 8.0 |
+| rt_x.s | 0.9 | 3.5 | 3.3 |
+| rt_x.c | 1.0 | 3.9 | 3.7 |
+| rt_core | 5.3 | 9.7 | 9.5 |
+| ppu_ref (fp_line, ppu_fp_run, ...) | 13.0 | 46.3 | 38.7 |
+| cpu6502 + mapper | 0.7 | 2.7 | 2.4 |
+| APU (cue) | 1.0 | 1.2 | 1.2 |
+| c2p + display | 0.4 | 7.8 | 6.0 |
+| main/audio/platform | 0.9 | 0.8 | 0.9 |
+| total ms per NES frame | 25 | 85 | 74 |
+
+Hottest functions (share of all samples): `fp_line` 21 % (line-up) / 17 % (field), `c2p_frame` 5.5 % / 4.7 %, `xrt_rd_c` 2 %, `mem_read` 2 %, `rt_wr_mmc1` 1.2 %, `fetch_tile` 1 %.
+
+**Long run** (field start of the Watch Game script: snapshot at frame 1600, normal telemetry build, 380 s of emulated time): game frames 2288 -> 7497 in ticks 2959 -> 25792, i.e. **22.8 %** on average (5209 frames = 87 s of game time in 380 s); the display converts every 3rd to 4th frame (1474 converted, 4423 skipped while behind).
