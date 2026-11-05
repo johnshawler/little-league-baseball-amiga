@@ -92,3 +92,19 @@ bitmap at the scrolled position) while composing.  The layer is cleared incremen
 * `ar_hw_palette(region, out[32])` = palette entry each colour register must show.
 * Lines are plain regions even when a $2002 poll (sprite-0 wait) splits the line into pieces: the model decides at the end of the visible dots whether a PPU register / mapper /
   OAM write landed in the line (`Ppu.ar_wr`); exact rows dropped from about 40 to 1.8 per frame in the 6000 frame test.
+
+### Stage 2b: arender cost reduction (round 2; FS-UAE PAL, fast RAM, profile page, ms per game frame summed over the arender functions + ar2_build)
+Before = 0724ded with tile-granular rebuild only partially in place (profile `t1`), after = this round (`t9`).  Scenes: snapshots at frame 100 (menu), 1200 (line-up), 2000 (field).
+
+| | menu | line-up | field |
+|---|---|---|---|
+| arender before (ms/frame) | 4.1 | 13.7 | 12.1 |
+| arender after (ms/frame) | 1.8 | 5.4 | 6.6 |
+
+What changed (all exact: `ARENDER=2 PPU_CHECK=1` host, translated qemu runs, DRAWPAT 1,3,4,5,6,11):
+* `ensure_trow`: per tile row a copy of the 32 tile bytes + 8 attribute bytes it was built from; only the 4-tile groups that differ are looked at, only tiles whose (tile, palette) differ are redrawn, and only the bitmap bytes that differ from the old tile are written (chip RAM writes cost about 10 cycles each).  Rows that are new or have >= 3 changed groups are rewritten with long words from fast RAM buffers.  The palette-entry mask of a row is exact for new / bulk rows and a superset (OR of the new tiles) for small updates.
+* Sprite layer: composed per line in a fast RAM line buffer with 16 bit window operations; the long words that differ from a fast RAM copy of each layer set are the only ones written to chip RAM (no clearing pass).  A line whose inputs (sprites in range with their OAM bytes, pattern banks, clip, and for sprites behind the background the background window and the bitmap generation) equal those of the last composition into the same set is not touched at all.
+* Exact rows: chunky -> playfield encoding with 1024 entry tables per pixel pair (about 6x faster than the bit loops).
+* `ar_log_region`: the vl of the line after the last region is kept incrementally (was quadratic); `ar_out.reg` is written directly (no per-frame region copy); long word `ar_set/ar_cpy/ar_cmp`.
+* `hw_region`: the split into row-contiguous segments is closed form (no per line `incy1` loop; `-DAR_VERIFY` checks it against the loop).
+* Remaining arender cost: sprite composition of lines with moving sprites (`hw_line`), chip RAM writes of scrolled-in tiles (`ensure_trow`), and the encoding of long runs of exact rows.
