@@ -921,8 +921,9 @@ void ppu_fp_run(Nes*n,uint64_t target){
                     if(p->rend){
                         lt_ensure(n);
                         if(!p->spovf){ for(int l=L+1;l<=L+mm;l++) if(p->lt_cnt[l]>=8){ if(lt_ovf_cx(n,l)){ p->spovf=1; break; } } }
-                        if(!p->sp0hit && p->bg_en && p->sp_en){ uint64_t H=ppu_predict_hit(n); if(H && H<=p->dots+341ull*mm) p->sp0hit=1; }
                         m=mm;
+                        if(!p->sp0hit){ int sy=p->oam[0], h=p->large?16:8; if(sy<240){ int w0=sy, w1=sy+h; if(w1>239) w1=239;     /* sprite-0 window: lines sy .. sy+h are processed one by one */
+                            if(L+1<=w1 && w0<L+1+m){ m = w0>L+1 ? w0-(L+1) : 0; } } }
                     } else m=mm;
                     if(m>0){
 #ifdef FP_FASTLINE
