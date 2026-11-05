@@ -461,3 +461,32 @@ Speed (PAL, fast RAM, default timing, snapshots, ticks 1500..7000, one category 
 
 380 s Watch Game run (snapshot 1600): frames 2481 -> 11413 in ticks 2376 -> 25376 = **38.8 %** (chunky path 22.8 %); 2454 pictures shown. (Previous stage 2b state 69e4a07: 25.7 / 24.4 / 27.4 %.)
 `ar2_build` is below the resolution of the profile (`pal_items` 0.4 % of samples; the Copper list costs well under 1 ms per picture); the frame hook, input poll and platform code together are about 2 ms. To reach 100 % the frame must fit 16.6 ms: the next targets are the PPU model + `rt_core` + `rt_x` (about 24 ms together: every PPU register access and time-model sync), arender (~10 ms), and the translated code (~8 ms, dominated by cycle accounting).
+
+### 19.3 State at c6700b2: complete verification, speed, delivered images
+Tests (FS-UAE A1200 + 8 MB fast RAM, `FAST=1`, clean worktree of c6700b2, `tests/amiga/run_tests.sh <rom> <dir> both`): scenes **14 of 14** pixel-exact (PAL + NTSC); free-running keyboard ADF (frames 45/151/186/301/345, PAL + NTSC) and HDF boot (45/151) **0 pixels**; ARHW_TEST PAL + NTSC **0 pixels**; controllers (sticky_input 3327 / 65292), audio chain (underruns 0, correlation median 0.97 PAL / 0.95 NTSC), flip logic (PAL 499 of 600 frames shown, NTSC 598).
+Mid-frame palette frames 42, 1324, 2451, 3018, 4082 (STOP_AT builds, reference from the translated host build under `qemu-m68k -singlestep`): PAL + NTSC **10 of 10, 0 pixels**.
+The delivered `llb_final2.hdf` (built from the same commit with `tools/build_hdf.sh`) was booted separately: keyboard Return / Down reach reference frames 45 / 151 with 0 pixels, PAL + NTSC.
+Host: native lazy interpreter `PPU_CHECK=1` with `ARENDER=1` and `2` at `DRAWPAT` 1, 3, 4, 5, 6, 11 IDENTICAL over 58,283,430 records; translated qemu `-singlestep` IDENTICAL over 2,556,952 records (`A=1`, `DRAWPAT=3`, `4`, `6`).
+
+Speed (PAL, fast RAM, default timing, snapshots of the play script, profile window ticks 1500..7000 = 5500 ticks, same category scheme as 19.2; the profile build's scripted `input()` and `telem_draw` are test-only, together ~1.3 ms of the last row):
+
+| ms per NES frame | menu (100) | line-up (1200) | field (2000) |
+|---|---|---|---|
+| frames in 5500 ticks / speed | 4369 / **79.4 %** | 2094 / **38.1 %** | 2133 / **38.8 %** |
+| translated 6502 code | 1.8 | 9.3 | 8.9 |
+| rt_x.s (dispatch glue) | 0.9 | 3.1 | 3.0 |
+| rt_x.c (I/O helpers, slow path) | 1.0 | 2.1 | 2.0 |
+| rt_core (time model, PPU register access) | 3.8 | 5.0 | 5.1 |
+| ppu_ref (PPU model) | 8.2 | 8.5 | 8.8 |
+| cpu6502 + mapper | 0.6 | 1.7 | 1.6 |
+| APU (cue) | 1.1 | 1.1 | 1.1 |
+| arender | 2.3 | 10.4 | 9.9 |
+| display (ar2_build, plat) + main/audio/platform | 1.3 | 2.5 | 2.4 |
+| total | 21.0 | 43.7 | 42.8 |
+
+(19.2 at 90af238: 38.0 / 33.6 / 34.7 %, i.e. line-up +13 %, field +12 %; the menu window starts at game frame 1254 here, so its percentage is not comparable with the old row.)
+380 s Watch Game run (snapshot 1600, normal telemetry build): frames 2805 -> 12885 in ticks 2973 -> 25971 = **43.8 %** (19.2: 38.8 %); 2520 pictures shown (disp_conv), late 11285, underruns 0.
+
+Delivered images (built from c6700b2, ROM not included): `llb_final2.adf` SHA-256 `1d97d6b150d52b6c651a332366d0a74434006959f5c3d8155fae059357084ed9`, `llb_final2.hdf` (= build/llb_fastram.hdf) SHA-256 `32c2c6caad3daf29f35b1092038711ca8a21132daab6b4c4a51231f0b011f673`.
+
+What 1:1 (16.6 ms per frame for everything) would still need: the line-up / field frame costs 43 ms, i.e. 2.6x too much, and every block is large: translated code + dispatch + helpers 14 ms (cycle accounting per block and one helper call per I/O or indirect access), time model + PPU model 14 ms (about 1500 cycles per synchronisation piece, 50-100 pieces per frame), arender 10 ms per game frame (15-20 ms per drawn frame), the rest 6 ms.  Tuning single hot spots (done in this and the previous rounds) gives 10-15 % per round; 1:1 needs a different structure: (a) a PPU model that does not run between accesses at all (accesses to the PPU recorded with their cycle and the frame replayed once from the recorded register writes, closed-form), (b) translator output with cycle budgets per superblock and no per-block accounting for blocks without I/O, (c) arender drawing only every 4th-6th frame and composing sprites with the blitter or a cached per-sprite 16 pixel pre-shift, (d) fewer I/O helper calls by translating the common PPU register writes inline.  Together these are estimated at 20-25 ms, so even then 60 Hz is not certain on a 14 MHz 68EC020; 50-60 % is the realistic target for the next rounds.
