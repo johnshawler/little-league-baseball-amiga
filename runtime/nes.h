@@ -72,7 +72,11 @@ typedef struct {
     uint8_t  lt_cnt[240];             /* fast model: sprites in range per evaluation line (saturated at 255) */
     uint8_t  lt_idx[240][8];          /* first 8 sprites (OAM index) in range per evaluation line (valid when lt_full) */
     int16_t  lt_ocx[240];             /* dot (cx) at which the sprite overflow flag is set on this evaluation line: 0 none, -1 not computed yet */
+#ifndef AMIGA
+    uint8_t  linepal[240][32], linemask[240];   /* host self-check: palette RAM and PPUMASK at the start of every visible line (reference instance) */
+#endif
     int      ar_px;                   /* ar mode: the current piece must produce chunky pixels (exact line) */
+    uint8_t  ar_wr;                   /* a CPU write (PPU register, mapper, OAM DMA) happened since the last piece of the line: arender's line decision */
     int      ar_on;                   /* the scene log of arender is being recorded for this frame */
     int      fp;                      /* this instance is driven by the fast model (the OAM address during sprite evaluation is then computed on demand) */
     int16_t  oa_line; uint8_t oa_start;

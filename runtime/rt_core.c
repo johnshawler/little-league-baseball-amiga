@@ -85,8 +85,12 @@ static void rt_sync(uint64_t dots){
         if(p->frame_done && p->ar_on){      /* the scene log of the finished frame becomes the planar picture */
             p->ar_on=0; ar_end_frame(&nes,&ar_out);
 #ifndef AMIGA
-            if(rt_ppu_check){ static uint8_t fbx[240*256]; ar_expand(&ar_out,fbx); extern long ar_chk_frames, ar_chk_exact; ar_chk_frames++; for(int y=0;y<240;y++) ar_chk_exact+=ar_scene.exact[y]; if(getenv("ARDBG")){ int ne=0; for(int y=0;y<240;y++) ne+=ar_scene.exact[y]; fprintf(stderr,"frame %u regions %d exact %d\n",p->frame,ar_scene.nreg,ne); }
-                for(int i=0;i<240*256;i++) if(fbx[i]!=(uint8_t)nes_ref.ppu.fb[i]){ fprintf(stderr,"ARENDER FAIL: frame %u row %d x %d: planar %02x ref %02x (regions %d, exact rows %d, overflow %d)\n",p->frame,i>>8,i&255,fbx[i],(unsigned)nes_ref.ppu.fb[i],ar_scene.nreg,(int)ar_chk_exact,ar_scene.overflow); exit(5); } }
+            if(rt_ppu_check){ static uint8_t fbx[240*256]; if(ar_hw_enable) ar_expand_hw(&ar_out,fbx); else ar_expand(&ar_out,fbx);
+                { int cov[240]; for(int y=0;y<240;y++) cov[y]=0;     /* display state: every line is covered by exactly one region and carries the palette / mask of the reference at the start of the line */
+                  for(int i=0;i<ar_out.nreg;i++){ const ArRegion*r=&ar_out.reg[i]; for(int y=r->y0;y<=r->y1;y++){ cov[y]++;
+                      if(memcmp(r->pal,nes_ref.ppu.linepal[y],32) || r->gray!=(nes_ref.ppu.linemask[y]&1) || r->emph!=((nes_ref.ppu.linemask[y]>>5)&7)){ fprintf(stderr,"ARENDER FAIL: frame %u line %d: region %d palette/mask differs from the reference\n",p->frame,y,i); exit(5); } } }
+                  for(int y=0;y<240;y++) if(cov[y]!=1){ fprintf(stderr,"ARENDER FAIL: frame %u line %d covered by %d regions (nreg %d)\n",p->frame,y,cov[y],ar_out.nreg); exit(5); } } extern long ar_chk_frames, ar_chk_exact; ar_chk_frames++; for(int y=0;y<240;y++) ar_chk_exact+=ar_scene.exact[y]; if(getenv("ARDBG2") && p->frame%1000==500){ fprintf(stderr,"F%u:",p->frame); for(int i=0;i<ar_out.nreg;i++){ const ArRegion*r=&ar_out.reg[i]; fprintf(stderr," [%d-%d k%d]",r->y0,r->y1,r->kind);} fprintf(stderr,"\n"); } if(getenv("ARDBG")){ int ne=0; for(int y=0;y<240;y++) ne+=ar_scene.exact[y]; fprintf(stderr,"frame %u regions %d exact %d\n",p->frame,ar_scene.nreg,ne); }
+                for(int i=0;i<240*256;i++) if(fbx[i]!=(uint8_t)nes_ref.ppu.fb[i]){ fprintf(stderr,"ARENDER FAIL: frame %u row %d x %d: planar %02x ref %02x (regions %d, exact rows %d, overflow %d)\n",p->frame,i>>8,i&255,fbx[i],(unsigned)nes_ref.ppu.fb[i],ar_scene.nreg,(int)ar_chk_exact,ar_scene.overflow); exit(5); } if(ar_hw_enable) ar_hw_shown(); }
 #endif
         }
         if(p->frame_done){ p->frame_done=0; rt.frames_done++; if(rt.frame_hook) rt.frame_hook(rt.frames_done-1); }
@@ -147,10 +151,10 @@ static void mem_write(uint16_t a, uint8_t v, uint64_t c){
     else if(a==0x4016){ int s=v&1; if(nes.strobe && !s){ nes.joy_shift[0]=nes.joy[0]; nes.joy_shift[1]=nes.joy[1]; } nes.strobe=s; }
     else if(a<0x4018) apu_write(&rt_apu,a,v,c);   /* $4000-$4013, $4015, $4017 (4014/4016 handled above) */
     else if(a>=0x8000){
-        if(mmc1_write_ppu_effect(&nes.map,a,v)) rt_sync(3*c+4);      /* the write changes what the PPU fetches: the PPU must be at this dot first */
+        if(mmc1_write_ppu_effect(&nes.map,a,v)){ rt_sync(3*c+4); nes.ppu.ar_wr=1; }      /* the write changes what the PPU fetches: the PPU must be at this dot first */
         mmc1_write(&nes.map,a,v);
 #ifndef AMIGA
-        if(rt_ppu_check) mmc1_write(&nes_ref.map,a,v);
+        if(rt_ppu_check) nes_ref.map=nes.map;      /* the reference instance sees the result (the assembler fast path only moves the serial register of the real one) */
 #endif
     }
 }
@@ -174,7 +178,7 @@ static void process_dma(uint16_t read_addr){
                         (!p->rend || (p->line>=240 && (p->line-240)*341+p->cx+rem < 21*341))) ? 1 : 0;
                 if(fast && rt.dma_on){   /* the remaining pairs of get/put cycles in one go: bytes ra..255 of the RAM page into OAM at the OAM address, 2 cycles each */
                     const uint8_t*src=nes.ram+((rt.dma_page<<8)&0x7FF); unsigned oa=p->oamaddr; uint8_t*oam=p->oam; unsigned i=ra;
-                    if(p->ar_on && p->line>=0 && p->line<240) ar_flush(&nes,1);
+                    if(p->ar_on && p->line>=0 && p->line<240){ ar_flush(&nes,1); p->ar_wr=1; }
                     uint8_t diff=0;
                     for(;i<256 && (oa&3);i++){ uint8_t b=src[i]; if((oa&3)==2) b&=0xE3; diff|=(uint8_t)(oam[oa]^b); oam[oa]=b; oa=(oa+1)&255; }
                     for(;i+4<=256;i+=4,oa=(oa+4)&255){ uint8_t b0=src[i],b1=src[i+1],b2=src[i+2]&0xE3,b3=src[i+3]; diff|=(uint8_t)((oam[oa]^b0)|(oam[oa+1]^b1)|(oam[oa+2]^b2)|(oam[oa+3]^b3)); oam[oa]=b0; oam[oa+1]=b1; oam[oa+2]=b2; oam[oa+3]=b3; }

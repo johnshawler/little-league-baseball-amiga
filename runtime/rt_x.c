@@ -43,10 +43,13 @@ extern int rt_ppu_check;
 #endif
 int32_t xrt_wr_c(uint32_t addr, uint32_t val, int32_t d5, int32_t adj){
     uint64_t c=rt.limit-(int64_t)d5+adj; uint16_t a=(uint16_t)addr;
-    if(a>=0x8000 && !XCHK){          /* mapper write (the fifth of a serial load, or a reset): no layers in between */
+    if(a>=0x8000){          /* mapper write (the fifth of a serial load, or a reset): no layers in between */
         trace_c('W',a,(uint8_t)val,c);
-        if(mmc1_write_ppu_effect(&nes.map,a,(uint8_t)val)) ppu_sync_rt(3*c+4);
+        if(mmc1_write_ppu_effect(&nes.map,a,(uint8_t)val)){ ppu_sync_rt(3*c+4); nes.ppu.ar_wr=1; }
         mmc1_write(&nes.map,a,(uint8_t)val); rt.openbus=(uint8_t)val; load_mapper_ptrs();
+#ifndef AMIGA
+        if(XCHK){ extern Nes nes_ref; nes_ref.map=nes.map; }
+#endif
         if(!rt.ldirty) return 0;
         rt.ldirty=0; uint64_t nl=rt_compute_limit_at(c); int32_t delta=(int32_t)(nl-rt.limit); rt.limit=nl; return delta;
     }
@@ -73,7 +76,8 @@ int32_t xrt_slow_c(int32_t pc_in){ xrt_st_entries++;
         cpu->a=(uint8_t)c->d[0]; cpu->x=(uint8_t)c->d[1]; cpu->y=(uint8_t)c->d[2]; cpu->s=(uint8_t)c->d[3];
         cpu->p=(uint8_t)((c->nzc&0x82)|((c->d[4]&0xFF)?1:0)|(c->vflag&0x40)|(c->misc&0x0C)|0x20); cpu->pc=(uint16_t)pc_in;
         rt.cyc=rt.limit-(int64_t)(int32_t)c->d[5];
-        rt_lazy=1; lazy_limit=rt.limit; rt.ldirty=0;
+        if(rt.ldirty){ rt.limit=rt_compute_limit_at(rt.cyc); rt.ldirty=0; }      /* inputs of the limit changed since it was computed (queue, DMA) */
+        rt_lazy=1; lazy_limit=rt.limit;
         rt_nmi_check();
     }
 #ifndef AMIGA

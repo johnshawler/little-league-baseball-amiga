@@ -23,7 +23,7 @@ static uint8_t vram_read(Nes *n, uint16_t a){
 static void vram_write(Nes *n, uint16_t a, uint8_t v){
     a&=0x3FFF;
     if(a<0x2000) return;
-    if(a<0x3F00){ uint16_t o=nt_off(&n->map,a); if(P->ar_on && P->line>=0 && P->line<240) ar_flush(n,0); P->nt[o]=v; P->ntv[o>>5]++; P->ntver_all++; return; }
+    if(a<0x3F00){ uint16_t o=nt_off(&n->map,a); if(P->ar_on && P->line>=0 && P->line<240) ar_flush_nt(n); P->nt[o]=v; P->ntv[o>>5]++; P->ntver_all++; return; }
     uint8_t i=a&0x1F; v&=0x3F;
     if((i&3)==0){ if(P->pal[i&0x0F]!=v||P->pal[(i&0x0F)|0x10]!=v) PALVAR(P); P->pal[i&0x0F]=v; P->pal[(i&0x0F)|0x10]=v; } else { if(P->pal[i]!=v) PALVAR(P); P->pal[i]=v; }
 }
@@ -182,6 +182,9 @@ static void first_cycle(Nes *n){
     if(++p->line>260){ p->line=-1; p->sp_count=0; }
     if(p->line==241 && !ppu_noinput) nes_input_poll();
     if(p->line<240){
+#ifndef AMIGA
+        if(p->line>=0){ for(int i=0;i<32;i++) p->linepal[p->line][i]=p->pal[i]; p->linemask[p->line]=p->mask; }
+#endif
         if(p->line==-1){ p->spovf=0; p->sp0hit=0; }
     } else if(p->line==240){ p->frame++; p->frame_done=1; }
 }
@@ -227,7 +230,7 @@ uint8_t ppu_reg_read(Nes *n, uint16_t a){
         r=(uint8_t)(st|(p->openbus&0x1F)); break; }
     case 4: if(p->fp) fp_oam_fix(n); r=p->oam[p->oamaddr]; break;
     case 7: {
-        uint16_t va=p->v&0x3FFF; uint8_t old=p->rdbuf;
+        p->ar_wr=1; uint16_t va=p->v&0x3FFF; uint8_t old=p->rdbuf;
         p->rdbuf=vram_read(n,va);
         if(va>=0x3F00) r=(uint8_t)((p->pal[va&0x1F]&(p->gray?0x30:0x3F))|(p->openbus&0xC0)); else r=old;
         p->v=(uint16_t)(p->v+p->vinc); break; }
@@ -235,7 +238,7 @@ uint8_t ppu_reg_read(Nes *n, uint16_t a){
     p->openbus=r; return r;
 }
 void ppu_reg_write(Nes *n, uint16_t a, uint8_t v){
-    Ppu*p=P; p->openbus=v;
+    Ppu*p=P; p->openbus=v; p->ar_wr=1;
     switch(a&7){
     case 0: set_ctrl(n,v); break;
     case 1: set_mask(n,v); break;
@@ -593,7 +596,7 @@ static __attribute__((noinline)) void fp_blank_line(Nes*n,int L){
     p->rowblank[L]=(uint8_t)(idx+1); p->rowok[L]=0; p->rowdirty[L]=1;
 }
 /* ---- scene log emission for arender (5-plane build) ----------------------------------------------------------------------------- */
-static int ar_prev_whole, ar_prev_blank, ar_late, ar_cur_exact;
+static int ar_prev_whole, ar_prev_blank, ar_late, ar_cur_exact, ar_dirty, ar_fin, ar_ok0; static ArRegion ar_cand;
 #ifdef ARDBG2
 extern char*getenv(const char*); extern int atoi(const char*); static int ardbg_f_init, ardbg_f_v; static int ardbg_f_get(void){ if(!ardbg_f_init){ ardbg_f_init=1; char*e=getenv("ARDBG_F"); ardbg_f_v=e?atoi(e):2000; } return ardbg_f_v; }
 #define ardbg_f ardbg_f_get()
@@ -603,8 +606,9 @@ static void ar_fill_region(Nes*n,ArRegion*r,int y0,int y1,uint16_t vl){
     Ppu*p=P; r->y0=(int16_t)y0; r->y1=(int16_t)y1; r->vl=vl; r->tx=(uint16_t)(p->t&0x041F); r->fx=p->fx; r->rend=(uint8_t)(p->rend!=0);
     r->blank_idx=(uint8_t)(((p->v&0x3F00)!=0x3F00)?0:(p->v&0x1F)); r->bg_en=p->bg_en; r->sp_en=p->sp_en; r->min_bg=p->min_bg; r->min_sp=p->min_sp;
     r->bgpat=p->bgpat?1:0; r->sppat=p->sppat?1:0; r->large=p->large; r->mirror=n->map.mirror; r->chr_lo=(uint8_t)(n->map.chr_lo>>12); r->chr_hi=(uint8_t)(n->map.chr_hi>>12);
-    r->gray=p->gray; r->emph=p->emph; for(int i=0;i<32;i++) r->pal[i]=p->pal[i];
+    r->gray=p->gray; r->emph=p->emph; r->exact=0; for(int i=0;i<32;i++) r->pal[i]=p->pal[i];
 }
+static void ar_exact_line(Nes*n,int y){ ArRegion r; ar_fill_region(n,&r,y,y,0); r.exact=1; ar_log_exact(n,y); ar_log_region(n,&r); }
 static void ar_whole(Nes*n,int y0,int y1){        /* whole lines y0..y1 are about to be processed; p->v is still the value after the line before */
     Ppu*p=P; if(!p->ar_on) return;
     if(!ar_prev_whole) ar_log_exact(n,y0);
@@ -819,18 +823,21 @@ static __attribute__((noinline)) void fp_piece(Nes*n,int L,int a,int c1){
     int px=p->draw;                              /* produce chunky pixels in this piece */
 #ifdef FP_FASTLINE
     if(p->ar_on && L<240){                       /* arender: a line is a plain region when no access lands in dots 1..255 and none in the line before at dots >= 261 (prefetch) */
-        if(a==1){ ar_late=0; ar_cur_exact=1;
+        if(a==1){ ar_late=0; ar_dirty=0; ar_fin=0; ar_cur_exact=1; p->ar_wr=0;
             if(L>=0){
-                if(c1>=256 && ar_ok(rend)){ ArRegion r; ar_fill_region(n,&r,L,L,decx_n(p->v,2)); ar_log_region(n,&r); ar_cur_exact=0; }
-                else { 
-#ifdef ARDBG2
-                    if(p->frame>=(unsigned)ardbg_f && p->frame<(unsigned)ardbg_f+3){ extern int fprintf(void*,const char*,...); extern void*stderr; fprintf(stderr,"exact: frame %u line %d first piece ..%d prev_whole=%d prev_blank=%d rend=%d\n",p->frame,L,c1,ar_prev_whole,ar_prev_blank,rend); }
-#endif
-                    ar_log_exact(n,L); }
+                ar_ok0=ar_ok(rend); ar_fill_region(n,&ar_cand,L,L,decx_n(p->v,2));
+                if(!ar_ok0){ ar_cand.exact=1; ar_log_exact(n,L); ar_log_region(n,&ar_cand); ar_fin=1; }
+                else if(c1>=256){ ar_log_region(n,&ar_cand); ar_cur_exact=0; ar_fin=1; }
             }
+        } else if(p->ar_wr){                    /* a CPU write landed at dot a-1: before dot 256 it changes this line (exact line), from dot 261 on the prefetch of the next one */
+            p->ar_wr=0; if(a-1<256) ar_dirty=1; else if(a-1>=261 && a-1<340) ar_late=1;
+        }
+        if(L>=0 && !ar_fin && c1>=256){         /* the visible dots of the line are decided: plain region when nothing was written meanwhile (the sync points of $2002 polls do not matter) */
+            ar_fin=1;
+            if(ar_dirty){ ar_cand.exact=1; ar_log_exact(n,L); ar_log_region(n,&ar_cand); }
+            else { ar_log_region(n,&ar_cand); ar_cur_exact=0; }
         }
         px = (L>=0) ? ar_cur_exact : 1;
-        if(c1>=261 && c1<340 && !(L==-1 && c1==339)) ar_late=1;
         p->ar_px = px || (c1>=261 && c1<340 && !(L==-1 && c1==339));
         ar_prev_whole=!ar_late && rend; ar_prev_blank=!ar_late && !rend;
     }
