@@ -5,6 +5,24 @@
 #include "../runtime/rt.h"
 #endif
 
+#if defined(TELEM) && defined(ARENDER_HW2)
+extern uint8_t *const ar2_tel;
+void telem_draw(uint8_t *buf, const uint32_t *w, unsigned nwords, unsigned line)
+{
+    (void)buf;
+    for (unsigned i = 0; i < nwords; i++) {
+        unsigned row = i >> 3, col = (i & 7) * 4;
+        uint32_t v = w[i];
+        for (unsigned k = 0; k < 4; k++) {
+            uint8_t b = (uint8_t)(v >> (24 - 8 * k));
+            for (unsigned l = 0; l < 2; l++) {
+                unsigned y = line + row * 2 + l; if (y >= 240) continue;
+                for (unsigned p = 0; p < 4; p++) ar2_tel[(p * 240 + y) * 32 + col + k] = b;
+            }
+        }
+    }
+}
+#else
 void telem_draw(uint8_t *buf, const uint32_t *w, unsigned nwords, unsigned line)
 {
     for (unsigned i = 0; i < nwords; i++) {
@@ -20,6 +38,7 @@ void telem_draw(uint8_t *buf, const uint32_t *w, unsigned nwords, unsigned line)
     }
 }
 
+#endif
 #ifdef PCTRACE      /* debugging aid: the interrupted PC of every profiler interrupt is drawn into the picture (lines 232..) */
 void plat_prof_pc(uint32_t pc)
 {

@@ -83,7 +83,7 @@ static void on_frame(long f)
 
     /* 2. picture: frames decided as "not displayed" before they started (nes.ppu.draw = 0: the PPU computes only state effects, no pixels) are skipped; while behind
      * real time at most DISPLAY_SKIP_MAX frames in a row are not drawn */
-    int drawn = nes.ppu.draw;
+    int drawn = nes.ppu.draw, shown_now = 0;
     int pv = nes.ppu.palvar; nes.ppu.palvar = 0;        /* palette/emphasis changed while the picture was drawn (about 1 frame in 1000: screen transitions) */
 #if !defined(PPU_FB5) || defined(ARENDER_HW)
     pv = 0;                       /* ARENDER_HW: palette changes inside a frame are carried by the Copper list */
@@ -91,7 +91,7 @@ static void on_frame(long f)
     if (!drawn || pv) { skip_run++; st_dskip++; }
     else {
         skip_run = 0; t0 = plat_eclock();
-        if (display_frame(nes.ppu.fb, nes.ppu.rowdirty)) st_dconv++;
+        if (display_frame(nes.ppu.fb, nes.ppu.rowdirty)) { st_dconv++; shown_now = 1; }
         st_disp += e_since(t0);
 #ifdef TELEM
         {
@@ -113,7 +113,7 @@ static void on_frame(long f)
 #endif
 #ifdef STOP_AT      /* test builds: show the picture of frame STOP_AT (hook index, as FBDUMP of tools/rt_host.c) and stop */
     if (f == STOP_AT) {
-        while (!display_frame(nes.ppu.fb, nes.ppu.rowdirty)) plat_wait_vbl();
+        while (!shown_now && !display_frame(nes.ppu.fb, nes.ppu.rowdirty)) plat_wait_vbl();    /* once per picture: a second call would see the buffers after ar_hw_shown() */
         for (;;) __asm__ volatile("stop #0x2000");
     }
 #endif
@@ -143,7 +143,13 @@ static void on_frame(long f)
 #ifdef PROFILE
     {
         static uint8_t done;
-        if (plat_tick_count >= PHI + 60 && !done) { done = 1; display_freeze(); plat_display_full(); telem_prof_report(plat_buf[display_back() ^ 1]); plat_show(display_back() ^ 1); }
+        if (plat_tick_count >= PHI + 60 && !done) { done = 1;
+#ifdef ARENDER_HW2
+            { extern unsigned ar2_tel_mode; ar2_tel_mode = 2; while (!display_frame(0, 0)) plat_wait_vbl(); display_freeze(); telem_prof_report(0); }
+#else
+            display_freeze(); plat_display_full(); telem_prof_report(plat_buf[display_back() ^ 1]); plat_show(display_back() ^ 1);
+#endif
+        }
     }
 #endif
 }
@@ -246,7 +252,7 @@ void main(void)
 #endif
     game_base = plat_tick_count;
 #ifdef ARENDER_HW
-    { extern int ppu_ar_enable; ppu_ar_enable = 1; }      /* the PPU model logs the scene, ar_end_frame() composes the planes of every drawn frame */
+    { extern int ppu_ar_enable; ppu_ar_enable = 1; }      /* (ARENDER_HW=2: display_init has set ar_hw_enable = 1: stage 2b output) */      /* the PPU model logs the scene, ar_end_frame() composes the planes of every drawn frame */
 #endif
     xrt_run(0x7FFFFFFF);
     for (;;) { }

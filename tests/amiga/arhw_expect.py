@@ -15,10 +15,10 @@ x1v = lambda y, x: (x * 5 + y * 3) & 15
 x2v = lambda y, x: ((x + 2 * y) & 15) if x % 3 else 0
 BG, EX, BL = 0, 1, 2
 T = [(0, 31, BG, 0, 0, 0, 0, 0), (32, 63, BG, 0, 100, 5, 3, 1), (64, 95, BG, 1, 300, 63, 7, 2), (96, 107, BG, 0, 500, 16, 0, 2), (108, 127, BG, 0, 0, 16, 0, 3),
-     (128, 143, EX, 0, 0, 0, 0, 3), (144, 159, BL, 0, 0, 0, 0, 4), (160, 191, BG, 1, 0, 31, 5, 4), (192, 215, BG, 0, 200, 8, 0, 5), (216, 239, BG, 0, 224, 8, 0, 5)]
+     (128, 143, EX, 0, 0, 0, 0, 3), (144, 159, BL, 0, 0, 0, 0, 4), (160, 191, BG, 1, 0, 31, 5, 4), (192, 215, BG, 0, 200, 8, 0, 5), (216, 239, BG, 0, 224, 8, 0, 6)]
 exp = np.zeros((240, 256), dtype=np.uint32)
 for i, (y0, y1, kind, cfg, row0, bytex, fx, pv) in enumerate(T):
-    pal = [((e * 7 + 3 + (5 * pv if e % 8 == pv % 8 else 0) + (i if e == 17 else 0)) & 0x3F) for e in range(32)]
+    pal = [((e * 11 + 9 + 5 * pv) & 0x3F) if pv >= 6 else ((e * 7 + 3 + (5 * pv if e % 8 == pv % 8 else 0) + (i if e == 17 else 0)) & 0x3F) for e in range(32)]
     col = lambda e: nes[pal[e]]
     for y in range(y0, y1 + 1):
         for x in range(256):
@@ -28,7 +28,7 @@ for i, (y0, y1, kind, cfg, row0, bytex, fx, pv) in enumerate(T):
                 b = x1v(y, x); s = x2v(y, x)
             else:
                 b = 0; s = 0
-            exp[y, x] = col(16 + s) if s else col(b if b & 3 else 0)
+            exp[y, x] = (col(16 + s) if s & 3 else col(0)) if s else col(b if b & 3 else 0)
 im = np.asarray(Image.open(shot).convert('RGB')).astype(np.uint32)
 got = (im[oy:oy + 480:2, ox:ox + 512:2, 0] << 16) | (im[oy:oy + 480:2, ox:ox + 512:2, 1] << 8) | im[oy:oy + 480:2, ox:ox + 512:2, 2]
 bad = (exp != got)

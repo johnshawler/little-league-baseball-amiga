@@ -45,13 +45,13 @@ void arhw_test_main(void)
         { 144, 159, AR_BLANK, 0,   0,  0, 0, 4 },
         { 160, 191, AR_BG,    1,   0, 31, 5, 4 },
         { 192, 215, AR_BG,    0, 200,  8, 0, 5 },
-        { 216, 239, AR_BG,    0, 224,  8, 0, 5 },     /* first line > 255 on PAL (Copper wait wrap) */
+        { 216, 239, AR_BG,    0, 224,  8, 0, 6 },     /* first line > 255 on PAL (Copper wait wrap) */
     };
     frame.nreg = 10;
     for (unsigned i = 0; i < 10; i++) {
         ArRegion *r = &frame.reg[i];
         r->y0 = T[i].y0; r->y1 = T[i].y1; r->kind = T[i].kind; r->cfg = T[i].cfg; r->row0 = T[i].row0; r->bytex = T[i].bytex; r->fx = T[i].fx; r->gray = 0; r->emph = 0;
-        for (unsigned e = 0; e < 32; e++) r->pal[e] = (uint8_t)((e * 7 + 3 + ((e % 8 == (unsigned)T[i].pv % 8) ? 5 * T[i].pv : 0) + (e == 17 ? i : 0)) & 0x3F);
+        for (unsigned e = 0; e < 32; e++) r->pal[e] = T[i].pv >= 6 ? (uint8_t)((e * 11 + 9 + 5 * T[i].pv) & 0x3F) : (uint8_t)((e * 7 + 3 + ((e % 8 == (unsigned)T[i].pv % 8) ? 5 * T[i].pv : 0) + (e == 17 ? i : 0)) & 0x3F);
     }
     static uint32_t used[10];
     for (unsigned i = 0; i < 10; i++) used[i] = (T[i].cfg ? 0x000000EFu : 0x0000FFFFu) | 0x00FE0000u;   /* palette entries shown: cfg 1: 0,1,2,3,5,6,7 (4 = backdrop), cfg 0: 0..15; sprites 17..23 */

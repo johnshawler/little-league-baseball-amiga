@@ -19,7 +19,8 @@ ROOT=$(pwd); B=${BUILD:-amiga}; B=$ROOT/build/$B; mkdir -p "$B"
 P=$ROOT/platform-a1200; R=$ROOT/runtime
 PREFIX=${PREFIX:-m68k-linux-gnu-}
 CC=${PREFIX}gcc; AS="${PREFIX}as -m68020 --register-prefix-optional"; LD="${PREFIX}ld -z noexecstack --no-warn-rwx-segments"
-if [ "$ARENDER_HW" = 1 ]; then EXTRA="$EXTRA -DARENDER_HW"; fi    # ARENDER_HW=1: planar picture from runtime/arender.c, Copper list per picture (platform-a1200/display_ar.c); default 0: chunky framebuffer + c2p
+if [ "$ARENDER_HW" = 1 ]; then EXTRA="$EXTRA -DARENDER_HW"; fi
+if [ "$ARENDER_HW" = 2 ]; then EXTRA="$EXTRA -DARENDER_HW -DARENDER_HW2"; fi    # ARENDER_HW=2: stage 2b, dual playfield straight from the persistent bitmaps (platform-a1200/display_ar2.c)    # ARENDER_HW=1: planar picture from runtime/arender.c, Copper list per picture (platform-a1200/display_ar.c); default 0: chunky framebuffer + c2p
 FASTRAM=${FASTRAM:-1}      # 1 (default): the program runs from the 8 MB fast RAM at 0x200000 (platform-a1200/link_fast.ld); 0: everything in chip RAM (link.ld, old layout)
 if [ "$FASTRAM" = 1 ]; then LDS=link_fast.ld; ASF="-Wa,--defsym,FASTRAM=1"; PBASE=0x200000; else LDS=link.ld; ASF=""; PBASE=0x800; fi
 FBFLAG=${FBFLAG:--DPPU_FB5}     # -DPPU_FB5: 5 bitplanes, framebuffer = palette RAM index (default); -DPPU_FB8: 8 planes, framebuffer = NES colour | emphasis
@@ -64,6 +65,7 @@ $AS $B/code.s -o $B/code.o; $AS $B/tabsp.s -o $B/tabsp.o; $AS $R/rt_x.s -o $B/rt
 for f in rt_core rt_x cpu6502 ppu_ref arender mapper_mmc1 apu; do $CC $RTFLAGS -c $R/$f.c -o $B/$f.o; done
 # 3. platform
 DISP=display; C2PO=$B/c2p.o; if [ "$ARENDER_HW" = 1 ]; then DISP=display_ar; C2PO=""; fi
+if [ "$ARENDER_HW" = 2 ]; then DISP=display_ar2; C2PO=""; fi
 for f in main $DISP $([ -n "$HW2O" ] && echo "display_ar2 arhw_test") audio platform telem libc tabs palette; do $CC $CFLAGS -I$P -I$B -I$R -c $P/$f.c -o $B/$f.o; done
 $CC -m68020 $AS5 -x assembler -c $P/c2p.s -o $B/c2p.o; $CC -m68020 -x assembler -c $P/crt0.s -o $B/crt0.o
 $CC -m68020 -x assembler -c $P/isr.s -o $B/isr.o; $CC -m68020 -x assembler -c $P/rom.s -o $B/rom.o
