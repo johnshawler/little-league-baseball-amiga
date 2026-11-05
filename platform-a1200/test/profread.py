@@ -3,7 +3,7 @@
 import bisect, os, subprocess, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import telem
-CATS = ['translated 6502 code', 'rt_x.s glue', 'rt_x.c helpers', 'rt_core (time model, PPU regs)', 'ppu_ref (PPU)', 'cpu6502 + mapper', 'apu', 'c2p + display', 'main/audio/platform', 'idle (STOP)', 'libgcc/other']
+CATS = ['translated 6502 code', 'rt_x.s glue', 'rt_x.c helpers', 'rt_core (time model, PPU regs)', 'ppu_ref (PPU)', 'cpu6502 + mapper', 'apu', 'arender (planar renderer)', 'display + main/audio/platform', 'idle (STOP)', 'libgcc/other']
 shot, elf = sys.argv[1:3]; top = int(sys.argv[3]) if len(sys.argv) > 3 else 30
 kind, w = telem.decode(shot, 'prof')
 if not w: raise SystemExit('no profile page')
