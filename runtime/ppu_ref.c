@@ -1,5 +1,6 @@
 /* ppu_ref.c - per-dot reference PPU (2C02 NTSC).  One call per dot: slow, host only.  Structure and all timing rules follow the instrumented
  * reference emulator (Mesen) as read in the discovery phase; deviations are listed in FACTS.md ("unverified"). */
+#pragma GCC optimize ("no-strict-aliasing")   /* word accesses to byte arrays below; a strict-aliasing miscompilation was seen on the 68k build */
 #include "nes.h"
 #include "arender.h"
 Nes nes;
@@ -20,7 +21,7 @@ static uint8_t vram_read(Nes *n, uint16_t a){
 static void vram_write(Nes *n, uint16_t a, uint8_t v){
     a&=0x3FFF;
     if(a<0x2000) return;
-    if(a<0x3F00){ uint16_t o=nt_off(&n->map,a); P->nt[o]=v; P->ntv[o>>5]++; P->ntver_all++; if(P->ar_on && P->line>=0 && P->line<240) ar_scene.overflow=1; return; }
+    if(a<0x3F00){ uint16_t o=nt_off(&n->map,a); if(P->ar_on && P->line>=0 && P->line<240) ar_flush(n,0); P->nt[o]=v; P->ntv[o>>5]++; P->ntver_all++; return; }
     uint8_t i=a&0x1F; v&=0x3F;
     if((i&3)==0){ if(P->pal[i&0x0F]!=v||P->pal[(i&0x0F)|0x10]!=v) PALVAR(P); P->pal[i&0x0F]=v; P->pal[(i&0x0F)|0x10]=v; } else { if(P->pal[i]!=v) PALVAR(P); P->pal[i]=v; }
 }
@@ -239,7 +240,7 @@ void ppu_reg_write(Nes *n, uint16_t a, uint8_t v){
     case 3: p->oamaddr=v; break;
     case 4:
         if(p->fp) fp_oam_fix(n);
-        if(p->line>=240 || !p->rend){ uint8_t b=v; if((p->oamaddr&3)==2) b&=0xE3; p->oam[p->oamaddr]=b; p->oamaddr++; p->oam_dirty=1; if(p->ar_on && p->line>=0 && p->line<240) ar_scene.overflow=1; }
+        if(p->line>=240 || !p->rend){ uint8_t b=v; if((p->oamaddr&3)==2) b&=0xE3; if(p->ar_on && p->line>=0 && p->line<240) ar_flush(n,1); p->oam[p->oamaddr]=b; p->oamaddr++; p->oam_dirty=1; }
         else p->oamaddr+=4;
         break;
     case 5:
@@ -298,7 +299,6 @@ typedef uint32_t __attribute__((may_alias, aligned(1))) u32u;         /* the sam
 #endif
 #ifndef PPU_FB5
 #define AR_BEGIN(n) ((void)0)
-#define AR_PIECE(n,L,a,c1) ((void)0)
 #endif
 #ifdef PPU_FB5
 #define FP_FASTLINE 1          /* 5-plane build: background row cache and tight whole-line loops (fp_line) */
@@ -406,7 +406,7 @@ static inline int s0_in_range(Ppu*p,int e){ int sy=p->oam[0], h=p->large?16:8; r
 /* what is needed for output line y: 0 nothing, 1 sprite 0 only (hit test), 2 everything (the line is drawn) */
 static inline int ctx_mode(Nes*n,int y){
     Ppu*p=P; if(y<0||y>239) return 0;
-    if(p->draw) return 2;
+    if(p->draw && (!p->ar_on || p->ar_px)) return 2;
     if(!p->sp0hit && s0_in_range(p,y-1)) return 1;
     return 0;
 }
@@ -454,9 +454,10 @@ static void ctx_build(Nes*n,FpCtx*c,int y,int mode,uint16_t vline){
 static uint16_t vline_live(Ppu*p,int c0){ int k= (p->rend_prev && c0>=8) ? (c0>256?32:(c0>>3)) : 0; return decx_n(decx_n(p->v,k),2); }
 
 static void ctx_ensure(Nes*n,int L,int a){      /* exotic fallback: the context of the line being output was not prepared by the previous line */
-    Ppu*p=P; FpCtx*cc=&p->fc[p->fcur]; if(cc->y==L) return;
+    Ppu*p=P; FpCtx*cc=&p->fc[p->fcur];
     int mode=ctx_mode(n,L); if(!mode) return;
-    ppu_exotic++;
+    if(cc->y==L && cc->mode>=mode) return;
+    if(!p->ar_on) ppu_exotic++;
     ctx_build(n,cc,L,mode,vline_live(p,a-1));
 }
 
@@ -590,7 +591,8 @@ static __attribute__((noinline)) void fp_blank_line(Nes*n,int L){
     p->rowblank[L]=(uint8_t)(idx+1); p->rowok[L]=0; p->rowdirty[L]=1;
 }
 /* ---- scene log emission for arender (5-plane build) ----------------------------------------------------------------------------- */
-static int ar_prev_whole;
+static int ar_prev_whole, ar_prev_blank;
+static inline int ar_ok(int rend){ return rend ? ar_prev_whole : (ar_prev_whole||ar_prev_blank); }   /* the line before allows a plain region of this kind */
 static void ar_fill_region(Nes*n,ArRegion*r,int y0,int y1,uint16_t vl){
     Ppu*p=P; r->y0=(int16_t)y0; r->y1=(int16_t)y1; r->vl=vl; r->tx=(uint16_t)(p->t&0x041F); r->fx=p->fx; r->rend=(uint8_t)(p->rend!=0);
     r->blank_idx=(uint8_t)(((p->v&0x3F00)!=0x3F00)?0:(p->v&0x1F)); r->bg_en=p->bg_en; r->sp_en=p->sp_en; r->min_bg=p->min_bg; r->min_sp=p->min_sp;
@@ -600,12 +602,11 @@ static void ar_fill_region(Nes*n,ArRegion*r,int y0,int y1,uint16_t vl){
 static void ar_whole(Nes*n,int y0,int y1){        /* whole lines y0..y1 are about to be processed; p->v is still the value after the line before */
     Ppu*p=P; if(!p->ar_on) return;
     if(!ar_prev_whole) ar_log_exact(n,y0);
-    ar_prev_whole=1; ArRegion r; ar_fill_region(n,&r,y0,y1,decx_n(p->v,2)); ar_log_region(n,&r);
+    ar_prev_whole=1; ar_prev_blank=0; ArRegion r; ar_fill_region(n,&r,y0,y1,decx_n(p->v,2)); ar_log_region(n,&r);
 }
-static void ar_blank(Nes*n,int y){ Ppu*p=P; if(!p->ar_on) return; ArRegion r; ar_fill_region(n,&r,y,y,0); ar_log_region(n,&r); ar_prev_whole=0; }
-static void ar_begin(Nes*n){ Ppu*p=P; p->ar_on=0; if(ppu_ar_enable && p->draw){ p->ar_on=1; ar_prev_whole=0; ar_begin_frame(n); } }
+static void ar_blank(Nes*n,int y){ Ppu*p=P; if(!p->ar_on) return; ArRegion r; ar_fill_region(n,&r,y,y,0); ar_log_region(n,&r); ar_prev_whole=0; ar_prev_blank=1; }
+static void ar_begin(Nes*n){ Ppu*p=P; p->ar_on=0; if(ppu_ar_enable && p->draw){ p->ar_on=1; ar_prev_whole=0; ar_prev_blank=0; ar_begin_frame(n); } }
 #define AR_BEGIN(n) ar_begin(n)
-#define AR_PIECE(n,L,a,c1) do{ if(P->ar_on){ if(L>=0) ar_log_exact(n,L); ar_prev_whole=0; } }while(0)
 static void fp_line(Nes*n,int L);
 /* ---- batches of whole lines: background validity per batch ------------------------------------------------------------------------
  * A run of whole lines (no access in between) is described by BatchKey (scroll at its start, parameters, name table write counter, extent).  When the key is the
@@ -809,14 +810,22 @@ static void fp_line(Nes*n,int L){
 /* ---- one piece: the dots a..c1 (1 <= a <= c1 <= 340) of line L; parameters constant, no pending update ---------------------------------- */
 static __attribute__((noinline)) void fp_piece(Nes*n,int L,int a,int c1){
     Ppu*p=P; int rend=p->rend;
-    if(L<240) AR_PIECE(n,L,a,c1);
+    int px=p->draw;                              /* produce chunky pixels in this piece */
+#ifdef FP_FASTLINE
+    if(p->ar_on && L<240){                       /* arender: whole plain lines are only logged, everything else is an exact (chunky) line */
+        int whole=(L>=0 && a==1 && c1==340);
+        if(whole && ar_ok(rend)){ if(rend) ar_whole(n,L,L); else ar_blank(n,L); px=0; }
+        else { if(L>=0) ar_log_exact(n,L); ar_prev_whole=whole && rend; ar_prev_blank=whole && !rend; }
+        p->ar_px=px;
+    }
+#endif
     if(L>=240){
         if(L==241 && a<=1 && c1>=1){ if(!p->prevent_vbl){ p->vbl=1; if(p->ctrl&0x80) p->nmi_level=1; } p->prevent_vbl=0; }
         return;
     }
     if(L<0){
         if(a<=1 && c1>=1){ p->vbl=0; p->nmi_level=0; }
-        if(rend && p->oamaddr>=8 && a<=8){ for(int cx=a;cx<=c1&&cx<=8;cx++){ p->oam[cx-1]=p->oam[(p->oamaddr&0xF8)+cx-1]; p->oam_dirty=1; if(p->ar_on) ar_scene.overflow=1; } }
+        if(rend && p->oamaddr>=8 && a<=8){ for(int cx=a;cx<=c1&&cx<=8;cx++){ if(p->ar_on) ar_flush(n,1); p->oam[cx-1]=p->oam[(p->oamaddr&0xF8)+cx-1]; p->oam_dirty=1; } }
     } else if(rend && !p->spovf){
         lt_ensure(n);
         if(p->lt_cnt[L]>=8){ int o=lt_ovf_cx(n,L); if(o && a<=o && o<=c1) p->spovf=1; }
@@ -842,12 +851,12 @@ static __attribute__((noinline)) void fp_piece(Nes*n,int L,int a,int c1){
     if(L>=0 && a<=256){
         int e=c1<256?c1:256;
         if(rend){
-            if(p->draw || (!p->sp0hit && p->bg_en && p->sp_en && s0_in_range(p,L-1))) ctx_ensure(n,L,a);
+            if(px || (!p->sp0hit && p->bg_en && p->sp_en && s0_in_range(p,L-1))) ctx_ensure(n,L,a);
             { FpCtx*cc=&p->fc[p->fcur];     /* the whole-line path of the line before leaves tiles 0 and 1 to be fetched now (parameters unchanged since) */
               if(cc->y==L && cc->mode==2 && cc->t01ok!=3){ uint16_t vl=(a==1)?decx_n(p->v,2):vline_live(p,a-1); fetch_tile(n,cc,0,0,vl,0,8); fetch_tile(n,cc,1,0,incx_n(vl,1),0,8); cc->t01ok=3; } }
             hit_scan(n,L,a,e);
         }
-        if(p->draw) draw_range(n,L,a-1,e);
+        if(px) draw_range(n,L,a-1,e);
     }
     p->v=v_adv(p,p->v,L,a-1,c1);
     if(rend && c1>=257 && a<=320) p->oamaddr=0;
@@ -874,7 +883,7 @@ void ppu_fp_run(Nes*n,uint64_t target){
                 int m=0;
                 if(L>=241 && L<=259){ m=260-L; if((uint64_t)m>room/341) m=(int)(room/341); if(m>0){ p->dots+=341ull*m; p->line+=m; return; } }
 #ifdef FP_FASTLINE
-                else if(L>=-1 && L<=238 && p->draw && !FP_GENERIC){
+                else if(L>=-1 && L<=238 && p->draw && !p->ar_on && !FP_GENERIC){
                     int mm=239-L; if((uint64_t)mm>room/341) mm=(int)(room/341);
                     if(p->rend && mm>0) fp_draw_batch(n,mm);
                     else for(int i=0;i<mm;i++){
@@ -885,8 +894,11 @@ void ppu_fp_run(Nes*n,uint64_t target){
                     continue;
                 }
 #endif
-                else if(L>=-1 && L<=238 && !p->draw){
+                else if(L>=-1 && L<=238 && (!p->draw || p->ar_on)){
                     int mm=239-L; if((uint64_t)mm>room/341) mm=(int)(room/341);
+#ifdef FP_FASTLINE
+                    if(p->ar_on && !ar_ok(p->rend)) mm=0;      /* the first line after a partial line is an exact line: it is processed on its own */
+#endif
                     /* lines that have work: sprite-0 window, overflow lines */
                     if(p->rend){
                         lt_ensure(n);
@@ -897,6 +909,9 @@ void ppu_fp_run(Nes*n,uint64_t target){
                         m=lim-(L+1); if(m<0) m=0;
                     } else m=mm;
                     if(m>0){
+#ifdef FP_FASTLINE
+                        if(p->ar_on){ if(p->rend) ar_whole(n,L+1,L+m); else for(int yy=L+1;yy<=L+m;yy++) ar_blank(n,yy); }
+#endif
                         if(p->rend){ p->v=(uint16_t)((incy_n(p->v,m)&~0x041F)|(incx_n((uint16_t)(p->t&0x041F),2)&0x041F)); p->oamaddr=0; }
                         p->dots+=341ull*m; p->line+=m; p->fc[0].y=p->fc[1].y=-1;
                         continue;

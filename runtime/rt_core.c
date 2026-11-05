@@ -63,7 +63,7 @@ static void chk_cmp(const char*what,int fbcmp){
     if(memcmp(p->pal,q->pal,32)) chk_fail(what,"pal",0,1);
     if(memcmp(p->nt,q->nt,2048)) chk_fail(what,"nt",0,1);
     if(memcmp(p->oam,q->oam,256)) chk_fail(what,"oam",0,1);
-    if(fbcmp && p->draw){ int nd=0; for(int i=0;i<240*256;i++) if(p->fb[i]!=q->fb[i]){ if(nd<12) fprintf(stderr,"PPU_CHECK FAIL (%s): framebuffer differs at row %d x %d: fast=%02x ref=%02x (frame %u) ctrl %02x mask %02x fx %d\n",what,i>>8,i&255,(unsigned)p->fb[i],(unsigned)q->fb[i],p->frame,p->ctrl,p->mask,p->fx); nd++; } if(nd){ fprintf(stderr,"%d pixels differ\n",nd); exit(4); } }
+    if(fbcmp && p->draw){ int nd=0; for(int i=0;i<240*256;i++) if((!p->ar_on || ar_scene.exact[i>>8]) && p->fb[i]!=q->fb[i]){ if(nd<12) fprintf(stderr,"PPU_CHECK FAIL (%s): framebuffer differs at row %d x %d: fast=%02x ref=%02x (frame %u) ctrl %02x mask %02x fx %d\n",what,i>>8,i&255,(unsigned)p->fb[i],(unsigned)q->fb[i],p->frame,p->ctrl,p->mask,p->fx); nd++; } if(nd){ fprintf(stderr,"%d pixels differ\n",nd); exit(4); } }
 }
 static void chk_advance(uint64_t to){
     Ppu*q=&nes_ref.ppu; q->draw=nes.ppu.draw; ppu_noinput=1; while(q->dots<to) ppu_step(&nes_ref); ppu_noinput=0;
@@ -174,7 +174,7 @@ static void process_dma(uint16_t read_addr){
                 if(fast && rt.dma_on){   /* the remaining pairs of get/put cycles in one go: bytes ra..255 of the RAM page into OAM at the OAM address, 2 cycles each */
                     const uint8_t*src=nes.ram+((rt.dma_page<<8)&0x7FF); unsigned oa=p->oamaddr; uint8_t*oam=p->oam; unsigned i=ra;
                     for(;i<256;i++){ uint8_t b=src[i]; if((oa&3)==2) b&=0xE3; oam[oa]=b; oa=(oa+1)&255; }
-                    if(p->ar_on && p->line>=0 && p->line<240) ar_scene.overflow=1;
+                    if(p->ar_on && p->line>=0 && p->line<240) ar_flush(&nes,1);
                     p->oamaddr=(uint8_t)oa; p->oam_dirty=1; p->openbus=src[255]; rt.cyc+=2u*(256-ra); rt.dma_on=0; rt_sync(3*rt.cyc+4);
                 }
             }
@@ -206,7 +206,7 @@ void rt_init(const uint8_t *prg, const uint8_t *chr){
 #ifndef AMIGA
     if(rt_ppu_check){ memset(&nes_ref,0,sizeof nes_ref); nes_ref.map=nes.map; ppu_reset(&nes_ref.ppu); }
 #endif
-    nes.ppu.fp=rt_fast_ppu; nes.ppu.oa_line=-2;
+    ar_init(); nes.ppu.fp=rt_fast_ppu; nes.ppu.oa_line=-2;
     rt_sync(26); rt.cyc=7;
     rt.cpu.pc=(uint16_t)(prg[7*16384+0x3FFC]|prg[7*16384+0x3FFD]<<8);
 }

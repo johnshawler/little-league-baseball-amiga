@@ -1,4 +1,5 @@
 /* arender.c - planar rendering of the NES picture from the scene log (see arender.h, docs/RENDER.md).  Target independent. */
+#pragma GCC optimize ("no-strict-aliasing")
 #include "arender.h"
 #include <string.h>
 
@@ -54,8 +55,15 @@ static uint16_t incy1(uint16_t a){
 static uint16_t next_vl(const ArRegion*r){            /* vl of the line after the region */
     uint16_t v=r->vl; for(int y=r->y0;y<=r->y1;y++) v=(uint16_t)((incy1(v)&~0x041F)|r->tx); return v;
 }
+static int resnap; static ArRegion disp[AR_MAX_REGIONS]; static int ndisp;
+static void render_region(Nes*n,const ArRegion*r);
 void ar_begin_frame(Nes*n){
-    ar_scene.nreg=0; ar_scene.overflow=0; memset(ar_scene.exact,0,sizeof ar_scene.exact); memcpy(ar_scene.oam,n->ppu.oam,256);
+    ar_scene.nreg=0; ar_scene.overflow=0; resnap=0; ndisp=0; memset(ar_scene.exact,0,sizeof ar_scene.exact); memcpy(ar_scene.oam,n->ppu.oam,256);
+}
+/* render the regions logged so far with the state as it is now (called before a name table / OAM change in the middle of the frame) */
+void ar_flush(Nes*n,int oam_changes){
+    for(int i=0;i<ar_scene.nreg;i++){ render_region(n,&ar_scene.reg[i]); if(ndisp<AR_MAX_REGIONS) disp[ndisp++]=ar_scene.reg[i]; }
+    ar_scene.nreg=0; if(oam_changes) resnap=1;
 }
 static int same_params(const ArRegion*a,const ArRegion*b){
     return a->tx==b->tx && a->fx==b->fx && a->rend==b->rend && a->blank_idx==b->blank_idx && a->bg_en==b->bg_en && a->sp_en==b->sp_en && a->min_bg==b->min_bg &&
@@ -63,13 +71,13 @@ static int same_params(const ArRegion*a,const ArRegion*b){
            a->chr_hi==b->chr_hi && a->gray==b->gray && a->emph==b->emph && !memcmp(a->pal,b->pal,32);
 }
 void ar_log_region(Nes*n,const ArRegion*r){
-    (void)n; ArScene*s=&ar_scene;
-    if(s->overflow) return;
+    ArScene*s=&ar_scene;
+    if(resnap){ memcpy(s->oam,n->ppu.oam,256); resnap=0; }
     if(s->nreg){
         ArRegion*l=&s->reg[s->nreg-1];
         if(l->y1+1==r->y0 && same_params(l,r) && (!r->rend || next_vl(l)==r->vl) ){ l->y1=r->y1; return; }
     }
-    if(s->nreg>=AR_MAX_REGIONS){ s->overflow=1; return; }
+    if(s->nreg>=AR_MAX_REGIONS) ar_flush(n,0);
     s->reg[s->nreg++]=*r;
 }
 void ar_log_exact(Nes*n,int y){ (void)n; if(y>=0&&y<240) ar_scene.exact[y]=1; }
@@ -149,14 +157,12 @@ static void render_region(Nes*n,const ArRegion*r){
 void ar_end_frame(Nes*n,ArFrame*out){
     ArScene*s=&ar_scene; Ppu*p=&n->ppu;
     for(int k=0;k<5;k++) out->plane[k]=ar_planes[k];
-    if(s->overflow){ for(int y=0;y<240;y++) s->exact[y]=1; }
-    else for(int i=0;i<s->nreg;i++) render_region(n,&s->reg[i]);
+    ar_flush(n,0); out->nreg=ndisp; for(int i=0;i<ndisp;i++) out->reg[i]=disp[i];
     /* exact rows: from the chunky frame buffer (palette index per pixel) */
     for(int y=0;y<240;y++) if(s->exact[y]){
         for(int k=0;k<5;k++) memset(&ar_planes[k][y*AR_STRIDE],0,AR_STRIDE);
         for(int x=0;x<256;x++){ unsigned v=p->fb[y*256+x]&31; for(int k=0;k<5;k++) if((v>>k)&1) ar_planes[k][y*AR_STRIDE+(x>>3)]|=(uint8_t)(0x80>>(x&7)); }
     }
-    out->nreg=s->nreg; for(int i=0;i<s->nreg;i++) out->reg[i]=s->reg[i];
 }
 void ar_expand(const ArFrame*f,uint8_t*fb){
     for(int y=0;y<240;y++) for(int x=0;x<256;x++){

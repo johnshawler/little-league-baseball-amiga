@@ -61,6 +61,7 @@ void ar_init(void);                               /* tables: CHR planar conversi
 void ar_begin_frame(Nes *n);
 void ar_log_region(Nes *n, const ArRegion *r);    /* appends; merges with the previous region when the parameters match and the progression continues */
 void ar_log_exact(Nes *n, int y);
+void ar_flush(Nes *n, int oam_changes);          /* render the log so far (before a mid-frame name table / OAM change); oam_changes: take a new OAM snapshot afterwards */
 void ar_end_frame(Nes *n, ArFrame *out);
 void ar_expand(const ArFrame *f, uint8_t *fb);    /* host: planar -> palette index per pixel (240*256 bytes), compared with the reference frame buffer */
 extern ArScene ar_scene; extern ArFrame ar_out; extern int ppu_ar_enable;   /* ar_out: result of the last frame rendered while ppu_ar_enable != 0 */

@@ -39,3 +39,12 @@ emphasis).  Stage 2: Copper list per region.
 1. (host, exact) scene log emission in the PPU model, `arender.c`, comparison in `PPU_CHECK`.
 2. (Amiga) display pointers into the persistent bitmaps, fine X by BPLCON1, sprites drawn with save/restore or dual playfield, skipping work on frames that
    are not displayed.
+
+## Integration (platform layer)
+* Set `ppu_ar_enable = 1` (e.g. in main() before `xrt_run`); `ar_init()` is called by `rt_init`.  Build: `runtime/arender.c` is part of the runtime
+  (added to `tools/build_xrt.sh`, `build_snap.sh`, `build_adf.sh`; PPU_FB5 builds only).
+* On every frame with `nes.ppu.draw != 0` the model logs the scene and, when the frame is complete (before `rt.frame_hook`), `ar_end_frame()` fills `ar_out`:
+  `ar_out.plane[0..4]` (240 rows of 32 bytes each, palette index bits 0..4 of every pixel) and `ar_out.reg[0..nreg-1]` (first/last line and the 32 palette RAM
+  entries, gray/emphasis of every region: load the colour registers at `y0`).  `nes.ppu.fb` then only holds the exact rows; do NOT convert it any more.
+* The planes are exactly what `display_frame` used to produce from `fb` with c2p, so the first integration step is a plain copy of the 5 planes (38 KB)
+  into the display buffer plus the per-region colour changes; later steps point the display at persistent bitmaps (stage 2).
