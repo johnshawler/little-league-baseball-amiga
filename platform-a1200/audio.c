@@ -103,7 +103,7 @@ void audio_commit(unsigned words)
 
 /* ------------------------------------------------------------------ cue mode (see audio.h, docs/APU.md "Cue mode") */
 static const uint8_t cue_hw[4] = { 0, 1, 3, 2 };            /* NES channel -> Paula channel (0,3 left, 1,2 right) */
-static int8_t cue_zero[2] __attribute__((aligned(4)));
+static int8_t cue_zero[2] __attribute__((aligned(4), section(".chipbuf")));
 static uint8_t cue_wave_last[4], cue_vol_last[4]; static uint16_t cue_per_last[4];
 
 void audio_cue_init(void)

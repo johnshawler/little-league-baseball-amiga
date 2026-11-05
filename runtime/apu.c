@@ -432,10 +432,15 @@ void apu_render8_ref(Apu *a, uint64_t from, uint64_t to, int8_t *out, unsigned n
  * Wave ids: 0..11 pulse (duty*3 + {1,2,4} steps per sample), 12..15 triangle (1,2,4,8 steps per sample), 16..20 noise long mode (every 1,2,4,8,16th LFSR step),
  * 21..25 noise short mode (same strides).  One waveform sample = one or more sequencer steps, played by Paula at the period that keeps the NES pitch. */
 #define CUE_NOISE_LEN 4096
-static int8_t cue_pulse[12][8] __attribute__((aligned(4)));
-static int8_t cue_tri[4][32] __attribute__((aligned(4)));
-static int8_t cue_noil[5][CUE_NOISE_LEN] __attribute__((aligned(4)));
-static int8_t cue_nois[5][186] __attribute__((aligned(4)));
+#ifdef AMIGA
+#define CUE_CHIP __attribute__((section(".chipbuf")))   /* Paula's DMA can only read chip RAM */
+#else
+#define CUE_CHIP
+#endif
+static int8_t cue_pulse[12][8] __attribute__((aligned(4))) CUE_CHIP;
+static int8_t cue_tri[4][32] __attribute__((aligned(4))) CUE_CHIP;
+static int8_t cue_noil[5][CUE_NOISE_LEN] __attribute__((aligned(4))) CUE_CHIP;
+static int8_t cue_nois[5][186] __attribute__((aligned(4))) CUE_CHIP;
 static ApuCueWave cue_wave[APU_CUE_NWAVE];
 static uint8_t cue_vol_sq[16], cue_vol_tri, cue_vol_noi[16];
 static uint32_t cue_k[2];            /* Paula colour clocks per CPU cycle in 16.16, PAL / NTSC */
