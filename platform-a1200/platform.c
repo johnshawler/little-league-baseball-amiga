@@ -134,7 +134,9 @@ volatile uint8_t  plat_keymap[16];
 
 static PlatCopper plat_cop __attribute__((aligned(8), section(".chipbuf")));
 uint8_t plat_buf[2][PLAT_BUF_SIZE] __attribute__((section(".chipbuf"), aligned(16)));
-static uint16_t null_sprite[8] __attribute__((aligned(8), section(".chipbuf")));   /* all zero = end of sprite */
+uint16_t plat_null_sprite[8] __attribute__((aligned(8), section(".chipbuf")));
+#define null_sprite plat_null_sprite
+volatile uint32_t plat_cop_ptr[2];   /* all zero = end of sprite */
 
 static uint16_t pal_hi[256], pal_lo[256];   /* high/low nibbles of every channel, as written with LOCT = 0 / 1 */
 static volatile uint8_t pal_pending;
@@ -280,7 +282,7 @@ void plat_isr_vbl_c(void)
     if (!(R16(INTREQR) & INT_VERTB)) { R16(INTREQ) = 0x0050; return; }
     R16(INTREQ) = INT_VERTB;
     plat_vbl_count++;
-    if (show_req >= 0) { apply_bpl_ptrs((unsigned)show_req); show_req = -1; }   /* before the Copper reloads the pointers at line PLAT_COP_SETUP_LINE */
+    if (show_req >= 0) { if (plat_cop_ptr[(unsigned)show_req]) R32(COP1LC) = plat_cop_ptr[(unsigned)show_req]; else apply_bpl_ptrs((unsigned)show_req); show_req = -1; }   /* before the Copper reloads the pointers at line PLAT_COP_SETUP_LINE */
     if (pal_pending) { pal_pending = 0; load_palette(); }
 }
 
@@ -386,7 +388,7 @@ void plat_init(void)
         R16(DDFSTRT) = DDF_STRT; R16(DDFSTOP) = DDF_STOP;
         R16(FMODE) = FMODE_VAL; R16(BPLCON0) = BPLCON0_8PL; R16(BPLCON1) = 0; R16(BPLCON2) = 0;
         R16(BPLCON3) = BPLCON3_BASE; R16(BPLCON4) = BPLCON4_BASE;
-        R16(BPL1MOD) = PLAT_STRIDE - PLAT_PLANE_STRIDE; R16(BPL2MOD) = PLAT_STRIDE - PLAT_PLANE_STRIDE;
+        R16(BPL1MOD) = PLAT_MOD; R16(BPL2MOD) = PLAT_MOD;
     }
     R32(COP1LC) = (uint32_t)&plat_cop;
     R16(COPJMP1) = 0;

@@ -35,7 +35,7 @@ SECTIONS
         _pr4 = .;  *ppu_ref.o(.text .text.*)                                /* PPU: line renderer, per-dot model */
         _pr5 = .;  *cpu6502.o(.text .text.*) *mapper_mmc1.o(.text .text.*)  /* interpreter (slow path), mapper */
         _pr6 = .;  *apu.o(.text .text.*)                                    /* APU */
-        _pr7 = .;  *c2p.o(.text .text.*) *display.o(.text .text.*)          /* display conversion */
+        _pr7 = .;  *c2p.o(.text .text.*) *display.o(.text .text.*) *display_ar.o(.text .text.*)          /* display conversion */
         _pr8 = .;  *main.o(.text .text.*) *audio.o(.text .text.*) *platform.o(.text .text.*) *telem.o(.text .text.*) *crt0.o(.text .text.*) *isr.o(.text .text.*) *libc.o(.text .text.*) *tabs.o(.text .text.*)
         _idle0 = .; *(.text.idle) _idle1 = .;                               /* STOP loop of the pacing wait */
         _pr9 = .;  *(.text .text.*)                                         /* libgcc (64-bit division) and the rest */

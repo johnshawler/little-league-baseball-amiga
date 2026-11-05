@@ -85,8 +85,8 @@ static void on_frame(long f)
      * real time at most DISPLAY_SKIP_MAX frames in a row are not drawn */
     int drawn = nes.ppu.draw;
     int pv = nes.ppu.palvar; nes.ppu.palvar = 0;        /* palette/emphasis changed while the picture was drawn (about 1 frame in 1000: screen transitions) */
-#ifndef PPU_FB5
-    pv = 0;
+#if !defined(PPU_FB5) || defined(ARENDER_HW)
+    pv = 0;                       /* ARENDER_HW: palette changes inside a frame are carried by the Copper list */
 #endif
     if (!drawn || pv) { skip_run++; st_dskip++; }
     else {
@@ -242,6 +242,9 @@ void main(void)
     apu_set_audio(&rt_apu, 0);               /* cue mode: no channel sequencer / event queue, the registers' state is all that is needed */
 #endif
     game_base = plat_tick_count;
+#ifdef ARENDER_HW
+    { extern int ppu_ar_enable; ppu_ar_enable = 1; }      /* the PPU model logs the scene, ar_end_frame() composes the planes of every drawn frame */
+#endif
     xrt_run(0x7FFFFFFF);
     for (;;) { }
 }
