@@ -7,7 +7,7 @@
 #   DISPLAY_TEST=frames.bin    alternate two stored frames on the display (pacing / conversion cost test)
 #   AUDIO_TEST=file.pcm        replay a PCM file through the audio module (no emulation)
 #   SNAPSHOT=file.snap         start from a runtime snapshot made by tools/snap.c (test builds)
-#   ARENDER_HW=1               picture from the planar renderer (runtime/arender.c) instead of chunky fb + c2p (needs the default PPU_FB5)
+#   ARENDER_HW=2 (default)     picture from the planar renderer, stage 2b: dual playfield straight from the persistent bitmaps (display_ar2.c); 1: stage 2a (5 planes copied, display_ar.c); 0: chunky framebuffer + c2p (display.c)
 #   FASTRAM=0                  old layout: everything in chip RAM, no fast RAM needed (default 1: 8 MB fast RAM at 0x200000 is required)
 #   BUILD=name                 build directory build/<name> (default amiga)
 # The ROM (iNES, mapper 1, 128 KB PRG + 128 KB CHR) is only read; it is copied into the disk image, never into the repository.
@@ -19,6 +19,7 @@ ROOT=$(pwd); B=${BUILD:-amiga}; B=$ROOT/build/$B; mkdir -p "$B"
 P=$ROOT/platform-a1200; R=$ROOT/runtime
 PREFIX=${PREFIX:-m68k-linux-gnu-}
 CC=${PREFIX}gcc; AS="${PREFIX}as -m68020 --register-prefix-optional"; LD="${PREFIX}ld -z noexecstack --no-warn-rwx-segments"
+ARENDER_HW=${ARENDER_HW:-2}; [ "$ARHW_TEST" = 1 ] && ARENDER_HW=0     # default 2: stage 2b (dual playfield from the persistent bitmaps); 1: stage 2a (5 planes copied); 0: chunky framebuffer + c2p
 if [ "$ARENDER_HW" = 1 ]; then EXTRA="$EXTRA -DARENDER_HW"; fi
 if [ "$ARENDER_HW" = 2 ]; then EXTRA="$EXTRA -DARENDER_HW -DARENDER_HW2"; fi    # ARENDER_HW=2: stage 2b, dual playfield straight from the persistent bitmaps (platform-a1200/display_ar2.c)    # ARENDER_HW=1: planar picture from runtime/arender.c, Copper list per picture (platform-a1200/display_ar.c); default 0: chunky framebuffer + c2p
 FASTRAM=${FASTRAM:-1}      # 1 (default): the program runs from the 8 MB fast RAM at 0x200000 (platform-a1200/link_fast.ld); 0: everything in chip RAM (link.ld, old layout)

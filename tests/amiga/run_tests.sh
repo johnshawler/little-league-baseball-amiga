@@ -83,7 +83,7 @@ echo "== audio chain"
 printf 'sleep 14\nfull z1\n' > $W/au.sh
 for s in $STDS; do
   R=$([ $s = pal ] && echo 28604 || echo 28867)
-  AUDIO_RATE=$R AUDIO_OUT=$W/rec_$s.wav AUDIO_TEST=$W/ref_$s.pcm EXTRA=-DTELEM run audio_$s $s au_$s 8 $W/au.sh
+  ARENDER_HW=0 AUDIO_RATE=$R AUDIO_OUT=$W/rec_$s.wav AUDIO_TEST=$W/ref_$s.pcm EXTRA=-DTELEM run audio_$s $s au_$s 8 $W/au.sh
   python3 tests/amiga/audio_cmp.py $W/rec_$s.wav $W/ref_$s.pcm $s || true
   python3 platform-a1200/test/telem.py $W/au_${s}_z1_full.png | grep -o "underruns=[0-9]* chunks_played=[0-9]*"
 done
@@ -95,7 +95,7 @@ open(sys.argv[1] + '/dtest.bin', 'wb').write(b''.join(bytes(b & 0xFF for b in w[
 PY
 printf 'sleep 30\nfull y1\n' > $W/df.sh
 for s in $STDS; do
-  DISPLAY_TEST=$W/dtest.bin EXTRA="-DTELEM -DDISPLAY_TEST_FLIP" run flip_$s $s flip_$s 12 $W/df.sh
+  ARENDER_HW=0 DISPLAY_TEST=$W/dtest.bin EXTRA="-DTELEM -DDISPLAY_TEST_FLIP" run flip_$s $s flip_$s 12 $W/df.sh
   python3 - <<PY
 import sys; sys.path.insert(0, "$T"); import telem
 k, w = telem.decode("$W/flip_${s}_y1_full.png")
