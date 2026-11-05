@@ -18,6 +18,7 @@ fi
 [ -f "$B/llb.bin" ] || { echo "missing $B/llb.bin"; exit 1; }
 # loader: assemble, check that it is position independent (same bytes linked at two addresses), wrap into a hunk file
 AS="${PREFIX}as -m68020 --register-prefix-optional"; LD="${PREFIX}ld -z noexecstack --no-warn-rwx-segments"
+[ "${FASTRAM:-1}" = 1 ] && AS="$AS --defsym FASTRAM=1"
 $AS "$ROOT/platform-a1200/loader.s" -o "$B/loader.o"
 $LD -e 0 -Ttext=0 --oformat=binary -o "$B/loader.bin" "$B/loader.o"
 $LD -e 0 -Ttext=0x123400 --oformat=binary -o "$B/loader2.bin" "$B/loader.o"

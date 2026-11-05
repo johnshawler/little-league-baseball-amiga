@@ -12,7 +12,11 @@
 |    magenta = AllocMem failed (payload too big for free chip RAM), red = disk read error, cyan = 68040/68060.
 |
 | `payload_len` (offset 20) is patched by tools/mkdisk.py (payload size rounded up to a multiple of 512).
+    .ifdef  FASTRAM
+    .equ    PAYLOAD_BASE, 0x200000      | FASTRAM build: the payload is linked at the start of the 8 MB fast RAM (0x200000-0x9FFFFF)
+    .else
     .equ    PAYLOAD_BASE, 0x800
+    .endif
     .equ    RELOC_ADDR,   0x200
 
     .text
@@ -34,12 +38,27 @@ start:
     bne     fail
     btst    #7,%d0
     bne     fail
+    .ifdef  FASTRAM
+    | the payload needs fast RAM covering 0x200000-0x9FFFFF: scan ExecBase->MemList for a MemHeader with MEMF_FAST (bit 2) and mh_Lower <= 0x200000, mh_Upper >= 0xA00000
+    move.l  322(%a6),%a0        | MemList.lh_Head
+1:  move.l  (%a0),%d0           | ln_Succ (0 = end of list)
+    beq.s   nofast
+    btst    #2,15(%a0)          | mh_Attributes (word at 14): MEMF_FAST
+    beq.s   2f
+    cmp.l   #0x200100,20(%a0)   | mh_Lower (the MemHeader itself sits at the start of the region)
+    bhi.s   2f
+    cmp.l   #0xA00000,24(%a0)   | mh_Upper
+    bcc.s   3f
+2:  move.l  %d0,%a0
+    bra.s   1b
+3:
+    .endif
     move.l  payload_len(%pc),%d7
     move.l  %d7,%d0
     moveq   #2,%d1              | MEMF_CHIP
     jsr     -198(%a6)           | AllocMem
     move.l  %d0,%d6             | d6 = staging buffer
-    beq.s   fail_mem
+    beq   fail_mem
     move.w  #2,28(%a4)          | io_Command = CMD_READ
     move.l  %d7,36(%a4)         | io_Length
     move.l  %d6,40(%a4)         | io_Data
@@ -47,13 +66,38 @@ start:
     move.l  %a4,%a1
     jsr     -456(%a6)           | DoIO
     tst.b   31(%a4)             | io_Error
-    bne.s   fail_read
+    bne   fail_read
     move.w  #9,28(%a4)          | TD_MOTOR
     clr.l   36(%a4)             | io_Length = 0 -> motor off
     move.l  %a4,%a1
     jsr     -456(%a6)
     lea     super(%pc),%a5
     jsr     -30(%a6)            | Supervisor(a5)  - never returns
+
+    .ifdef  FASTRAM
+nofast:                         | no suitable fast RAM: intuition DisplayAlert with the message, then wait
+    lea     intname(%pc),%a1
+    moveq   #0,%d0
+    jsr     -552(%a6)           | OpenLibrary("intuition.library")
+    tst.l   %d0
+    beq.s   9f
+    move.l  %d0,%a6
+    moveq   #0,%d0              | RECOVERY_ALERT
+    lea     alertmsg(%pc),%a0
+    moveq   #40,%d1             | height
+    jsr     -90(%a6)            | DisplayAlert
+9:  move.w  #0x0FF0,%d1         | yellow screen if no alert could be shown
+    bra   fail
+intname: .asciz "intuition.library"
+alertmsg:
+    .byte   0,40,16
+    .asciz  "Little League Baseball needs 8 MB FAST RAM at $200000"
+    .byte   1                   | another line follows
+    .byte   0,40,32
+    .asciz  "(A1200 with an 8 MB board; none found)"
+    .byte   0                   | last line
+    .even
+    .endif
 
 fail_mem:
     move.w  #0x0F0F,%d1
@@ -84,7 +128,7 @@ super:                          | supervisor mode, d6 = source, d7 = length
 3:  move.w  (%a0)+,(%a1)+
     dbra    %d0,3b
     move.l  %d6,%a0             | src = staging
-    lea     PAYLOAD_BASE.w,%a1  | dst
+    lea     PAYLOAD_BASE,%a1    | dst
     move.l  %d7,%d0
     lsr.l   #2,%d0              | longwords
     jmp     RELOC_ADDR.w
@@ -95,11 +139,11 @@ reloc:                          | position independent
 1:  move.l  (%a0)+,(%a1)+
     subq.l  #1,%d0
     bne.s   1b
-    jmp     PAYLOAD_BASE.w
+    jmp     PAYLOAD_BASE
 2:  lea     0(%a0,%d7.l),%a0    | end of src
     lea     0(%a1,%d7.l),%a1    | end of dst
 3:  move.l  -(%a0),-(%a1)
     subq.l  #1,%d0
     bne.s   3b
-    jmp     PAYLOAD_BASE.w
+    jmp     PAYLOAD_BASE
 reloc_end:

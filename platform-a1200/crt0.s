@@ -20,6 +20,13 @@ _start:
     clr.l   (%a0)+
     bra.s   1b
 2:
+    lea     _chip_start,%a0         | clear the chip RAM variables (Copper list, sprite/audio buffers: DMA-visible, must start zeroed)
+    lea     _chip_end,%a1
+5:  cmp.l   %a0,%a1
+    bls.s   6f
+    clr.l   (%a0)+
+    bra.s   5b
+6:
     | install the 64 exception vectors at 0x000000 (chip RAM; OVL is 0)
     lea     plat_vectors,%a0
     sub.l   %a1,%a1

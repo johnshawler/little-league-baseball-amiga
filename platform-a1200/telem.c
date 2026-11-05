@@ -32,7 +32,9 @@ void plat_prof_pc(uint32_t pc)
 #define PSH 5                       /* bin = 32 bytes of code */
 #endif
 extern char _pr0[], _pr1[], _pr2[], _pr3[], _pr4[], _pr5[], _pr6[], _pr7[], _pr8[], _pr10[], _idle0[], _idle1[];
-#define PLIM 0x80000
+#define PLIM 0x80000             /* profiled range: [_payload_base, _payload_base + PLIM): the program image (0x800 in chip-only builds, 0x200000 in FASTRAM builds) */
+extern char _payload_base[];
+#define PBASE ((uint32_t)_payload_base)
 static uint16_t prof[PLIM >> PSH];
 uint32_t prof_total, prof_other, prof_f0, prof_f1;
 extern volatile uint32_t plat_tick_count;
@@ -46,7 +48,7 @@ void plat_prof_pc(uint32_t pc)
     if (!prof_total) prof_f0 = (uint32_t)rt.frames_done;
     prof_f1 = (uint32_t)rt.frames_done;
     prof_total++;
-    if (pc >= 0x800 && pc < PLIM) { uint16_t *c = &prof[pc >> PSH]; if (*c < 65535) ++*c; } else prof_other++;
+    if (pc >= PBASE && pc - PBASE < PLIM) { uint16_t *c = &prof[(pc - PBASE) >> PSH]; if (*c < 65535) ++*c; } else prof_other++;
 }
 void telem_prof_report(uint8_t *buf)
 {
@@ -56,9 +58,9 @@ void telem_prof_report(uint8_t *buf)
     /* categories: translated code, rt_x.s, rt_x.c, rt_core, ppu_ref, cpu6502+mapper, apu, display, platform/main/audio, idle(STOP), libgcc/other */
     for (unsigned c = 0; c < 11; c++) {
         uint32_t a0 = (uint32_t)edges[c], a1 = (uint32_t)edges[c + 1], sum = 0;
-        for (uint32_t a = a0 >> PSH; a < (a1 + (1u << PSH) - 1) >> PSH && a < (PLIM >> PSH); a++) {
+        for (uint32_t a = (a0 - PBASE) >> PSH; a < (a1 - PBASE + (1u << PSH) - 1) >> PSH && a < (PLIM >> PSH); a++) {
             /* bins that straddle two categories are attributed to the one holding their start: link order keeps categories 32-byte aligned enough for this */
-            if ((a << PSH) >= a0 && (a << PSH) < a1) sum += prof[a];
+            if (PBASE + (a << PSH) >= a0 && PBASE + (a << PSH) < a1) sum += prof[a];
         }
         w[3 + c] = sum;
     }
@@ -69,7 +71,7 @@ void telem_prof_report(uint8_t *buf)
         for (unsigned i = 0; i < (PLIM >> PSH); i++) if (prof[i] > best) { best = prof[i]; bi = i; }
         if (!best) break;
         prof[bi] = 0;
-        w[16 + 2 * r] = bi << PSH; w[17 + 2 * r] = best;
+        w[16 + 2 * r] = PBASE + (bi << PSH); w[17 + 2 * r] = best;
     }
     telem_draw(buf, w, 16 + 88, 0);
 }

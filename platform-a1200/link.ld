@@ -44,7 +44,7 @@ SECTIONS
         _bss_end = .;
     }
     .stack (NOLOAD) : ALIGN(4) { . += _stack_size; _stack_top = .; }
-    .chipbuf (NOLOAD) : ALIGN(16) { *(.chipbuf) . = ALIGN(4); }
+    .chipbuf (NOLOAD) : ALIGN(16) { _chip_start = .; *(.chipbuf) . = ALIGN(4); _chip_end = .; }
     _end = .;
     ASSERT(_end <= _chip_limit - 0x1000, "image + buffers do not fit into 2 MB of chip RAM")
     /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) }

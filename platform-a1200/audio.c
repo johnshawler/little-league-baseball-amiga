@@ -27,9 +27,9 @@
 #define INT_AUD1 0x0100
 
 #define SIL_WORDS 16
-static int8_t chunk[AUD_SLOTS][AUD_MAX_WORDS * 2] __attribute__((aligned(4)));
+static int8_t chunk[AUD_SLOTS][AUD_MAX_WORDS * 2] __attribute__((aligned(4), section(".chipbuf")));
 static uint16_t chunk_words[AUD_SLOTS];
-static int8_t silence[SIL_WORDS * 2] __attribute__((aligned(4)));
+static int8_t silence[SIL_WORDS * 2] __attribute__((aligned(4), section(".chipbuf")));
 
 static volatile uint32_t q_head;         /* chunks produced (main) */
 static volatile uint32_t q_next;         /* chunks handed to the hardware (interrupt) */

@@ -16,6 +16,7 @@ ADF=${ADF:?set ADF=/path/to/llb.adf}
 sed -e "s|@KICK@|$KICK|" -e "s|@ADF@|$ADF|" -e "s|^\[end\]|screenshots_output_dir = $tmp\n[end]|" "$here/$std.fs-uae" > "$cfg"
 [ -n "$AUDIO_RATE" ] && sed -i "s|^\\[end\\]|audio_frequency = $AUDIO_RATE\\n[end]|" "$cfg"
 [ "$JOYPORT" = 0 ] && sed -i -e "s/^joystick_port_1 = keyboard/joystick_port_1 = none/" -e "s/^joystick_port_0 = none/joystick_port_0 = keyboard/" -e "s/action_joy_1_2nd_button/action_joy_0_2nd_button/" "$cfg"   # JOYPORT=0: the keyboard joystick drives Amiga joystick port 1 (player 2)
+[ "${FASTRAM:-1}" = 0 ] && sed -i "s/^fast_memory = 8192/fast_memory = 0/" "$cfg"   # FASTRAM=0: the machine without fast RAM (old chip-only build)
 [ -n "$CFGEXTRA" ] && sed -i "s|^\\[end\\]|$CFGEXTRA\\n[end]|" "$cfg"   # extra FS-UAE options, separated by \\n
 [ -n "$FAST" ] && sed -i 's|^\[end\]|accuracy = 0\nuae_cpu_speed = max\nuae_cpu_compatible = false\n[end]|' "$cfg"   # FAST=1: functional tests, the emulated CPU runs as fast as the host allows (not real A1200 speed)
 cd "$here"

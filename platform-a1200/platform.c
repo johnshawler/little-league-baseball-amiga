@@ -132,9 +132,9 @@ uint16_t plat_tick_base;
 uint32_t plat_tick_frac;
 volatile uint8_t  plat_keymap[16];
 
-static PlatCopper plat_cop __attribute__((aligned(8)));
+static PlatCopper plat_cop __attribute__((aligned(8), section(".chipbuf")));
 uint8_t plat_buf[2][PLAT_BUF_SIZE] __attribute__((section(".chipbuf"), aligned(16)));
-static uint16_t null_sprite[8] __attribute__((aligned(8)));   /* all zero = end of sprite */
+static uint16_t null_sprite[8] __attribute__((aligned(8), section(".chipbuf")));   /* all zero = end of sprite */
 
 static uint16_t pal_hi[256], pal_lo[256];   /* high/low nibbles of every channel, as written with LOCT = 0 / 1 */
 static volatile uint8_t pal_pending;

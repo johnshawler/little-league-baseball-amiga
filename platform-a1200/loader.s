@@ -7,7 +7,11 @@
 |    from there: it moves the staging buffer to 0x800 (memmove, ascending or descending) and jumps to the entry.  The OS is never used again.
 | Errors (before the take-over) are printed to the CLI output and returned as RETURN_FAIL (20): 68040/68060 (the cache handling is the 68020/68030 one),
 | payload not found / unreadable, not enough contiguous chip RAM.
+    .ifdef  FASTRAM
+    .equ    PAYLOAD_BASE, 0x200000      | FASTRAM build: payload linked at the start of the 8 MB fast RAM
+    .else
     .equ    PAYLOAD_BASE, 0x800
+    .endif
     .equ    RELOC_ADDR,   0x200
     .text
 start:
@@ -30,6 +34,21 @@ start:
     bne     fail
     btst    #7,%d0
     bne     fail
+    .ifdef  FASTRAM
+    lea     m_fast(%pc),%a2         | fast RAM covering 0x200000-0x9FFFFF: scan ExecBase->MemList for MEMF_FAST with mh_Lower <= 0x200000 and mh_Upper >= 0xA00000
+    move.l  322(%a3),%a0
+1:  move.l  (%a0),%d0
+    beq     fail
+    btst    #2,15(%a0)
+    beq.s   2f
+    cmp.l   #0x200100,20(%a0)
+    bhi.s   2f
+    cmp.l   #0xA00000,24(%a0)
+    bcc.s   3f
+2:  move.l  %d0,%a0
+    bra.s   1b
+3:
+    .endif
     move.l  %a4,%a6
     lea     fname(%pc),%a0
     move.l  %a0,%d1
@@ -126,7 +145,7 @@ super:                              | supervisor mode, d5 = source, d6 = length
 3:  move.w  (%a0)+,(%a1)+
     dbra    %d0,3b
     move.l  %d5,%a0                 | src = staging
-    lea     PAYLOAD_BASE.w,%a1      | dst
+    lea     PAYLOAD_BASE,%a1        | dst
     move.l  %d6,%d0
     lsr.l   #2,%d0                  | longwords
     move.l  %d6,%d7
@@ -138,13 +157,13 @@ reloc:                              | position independent (same as boot.s)
 1:  move.l  (%a0)+,(%a1)+
     subq.l  #1,%d0
     bne.s   1b
-    jmp     PAYLOAD_BASE.w
+    jmp     PAYLOAD_BASE
 2:  lea     0(%a0,%d7.l),%a0
     lea     0(%a1,%d7.l),%a1
 3:  move.l  -(%a0),-(%a1)
     subq.l  #1,%d0
     bne.s   3b
-    jmp     PAYLOAD_BASE.w
+    jmp     PAYLOAD_BASE
 reloc_end:
 
 dosname: .asciz "dos.library"
@@ -153,4 +172,7 @@ m_cpu:   .asciz "LittleLeague: 68040/68060 not supported\n"
 m_open:  .asciz "LittleLeague: cannot open PROGDIR:LittleLeague.dat\n"
 m_read:  .asciz "LittleLeague: cannot read LittleLeague.dat\n"
 m_mem:   .asciz "LittleLeague: not enough chip RAM\n"
+    .ifdef  FASTRAM
+m_fast:  .asciz "LittleLeague: needs 8 MB FAST RAM at $200000 (none found)\n"
+    .endif
     .even

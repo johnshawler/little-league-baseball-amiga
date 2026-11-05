@@ -329,3 +329,35 @@ Builds are made from a clean checkout (the working tree is shared with other age
 ms per NES frame, FB5, current tree (menu / line-up / field): translated code 3.3 / 7.2 / 19.7, `rt_x.s` 2.7 / 5.7 / 13.5, `rt_x.c` 10.1 / 19.5 / 46.3, `rt_core` 24.6 / 31.7 / 41.2, `ppu_ref` 352 / 363 / 425,
 `cpu6502`+mapper 2.5 / 4.2 / 13.3, APU 34.6 / 27.2 / 22.3, c2p + display 0.5 / 2.3 / 15.8, main/audio/platform 1.2 / 1.4 / 1.2.
 Largest remaining costs: `ppu_ref` (72-81 %: still the line renderer and the sprite/tile work on drawn frames plus the state-only lines), then `rt_x.c` + `rt_x.s` + translated code in the field scene (80 ms), APU (22-35 ms), c2p (16 ms in the field scene).
+
+## 16. Round 4: 8 MB fast RAM (the target machine now has it)
+
+**Assumption (default build, `FASTRAM=1`):** an A1200 with an 8 MB 32-bit fast RAM board covering `$200000-$9FFFFF` (FS-UAE: `fast_memory = 8192` gives exactly this, Z2 autoconfig card at `$200000`, 8192 KB; the trapdoor boards of
+real machines (Blizzard 1230, Apollo, ...) map their first 8 MB at `$200000` as well when autoconfigured as Zorro II-style RAM; boards that map elsewhere (e.g. at `$08000000`) are not supported by this link address).
+The bootblock and the HDF loader scan `ExecBase->MemList` while the OS is alive for a `MEMF_FAST` MemHeader with `mh_Lower <= $200100` (the header sits at the start of the region) and `mh_Upper >= $A00000`;
+if there is none the ADF shows an Intuition `DisplayAlert` ("Little League Baseball needs 8 MB FAST RAM at $200000") and the HDF loader prints the message in the CLI and returns RETURN_FAIL (tested with `fast_memory = 0`: alert shown).
+`FASTRAM=0 tools/build_adf.sh` (and `build_hdf.sh`) builds the old chip-only layout (`link.ld`); `FASTRAM=0` also switches the FS-UAE test configs back to `fast_memory = 0` (`run.sh`, `run_hdf.sh`).
+
+Memory model: `platform-a1200/link_fast.ld` links the payload (code 252 KB, runtime, read-only data, ROM, BSS: dispatch tables, PPU/APU state, framebuffer, display shadows, 16 KB stack) at `$200000` (end `$3774C8`: 3.4 MB of the 8 MB are used);
+in chip RAM remain only the vectors (0..$3FF, copied by crt0), and the section `.chipbuf` linked at `$1000` (bitplane buffers 2 x 38,400, Copper list, null sprite, Paula chunk ring and silence buffer; `$1000-$148B8`, cleared by crt0).
+The bootblock/loader still stage the payload (585 KB) in chip RAM and the relocator (running from `$200`) copies it to `$200000` (descending memmove) before jumping there. Interrupt handlers, stack and all data are in fast RAM; I-cache on, no D-cache (68EC020).
+Sparse dispatch tables and the shrunk APU queues are kept (harmless; the tables expand at boot into 8 x 64 KB of fast RAM).
+
+Verification (FS-UAE, A1200, KS 3.1, `fast_memory = 8192`): `run_tests.sh` scenes **14 of 14 pixel-exact** (PAL + NTSC); the HDF (`build_hdf.sh`, fast RAM loader) boots to the title (frame 30) and menu (frame 100) with 0 differing pixels on PAL and NTSC, and
+the real keyboard (Return, Down) reaches reference frames 45 and 151 with 0 differing pixels (PAL + NTSC); host regression unchanged (the runtime is not touched).
+
+Speed (same snapshots, 5 planes, PAL, profile window ticks 1500..7000, FS-UAE default timing; chip only = commit 633b964 FASTRAM=0):
+
+| | menu (100) chip -> fast | line-up (1200) | field (2000) |
+|---|---|---|---|
+| frames in 5500 ticks | 212 -> **402** | 198 -> **372** | 153 -> **280** |
+| **speed** | 3.86 % -> **7.3 %** | 3.6 % -> **6.8 %** | 2.78 % -> **5.1 %** |
+| translated code ms/frame | 3.3 -> 1.9 | 7.2 -> 3.8 | 19.7 -> 10.7 |
+| rt_x.s + rt_x.c | 12.8 -> 6.2 | 25.2 -> 11.1 | 59.8 -> 26.5 |
+| rt_core | 24.6 -> 13.6 | 31.7 -> 15.9 | 41.2 -> 20.2 |
+| ppu_ref | 352 -> 183 | 363 -> 192 | 425 -> 230 |
+| APU | 34.6 -> 20.8 | 27.2 -> 18.2 | 22.3 -> 23.7 |
+| c2p + display | 0.5 -> 0.3 | 2.3 -> 1.5 | 15.8 -> 9.0 |
+| total ms/frame | 466 -> 252 | 500 -> 268 | 590 -> 330 |
+
+Fast RAM gives a factor 1.85 everywhere (code and data accesses no longer wait for chip-RAM slots); the PPU model (70-80 % of the time) is the remaining problem.
