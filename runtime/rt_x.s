@@ -24,6 +24,9 @@ rt_disp:
 1:	jmp ([a4,d7.l*4])
 rt_unk_ent:
 rt_unk:
+.ifdef XRT_STATS
+	addq.l #1,xrt_st_unk
+.endif
 	/* d7.w = pc, flags canonical, d5 = limit-now */
 rt_slow_entry_common:
 	movem.l d0-d5,8(a2)
@@ -46,6 +49,9 @@ xrt_slow_entry:
 	move.l 60(a2),a6
 	bra rt_disp
 rt_slow:
+.ifdef XRT_STATS
+	addq.l #1,xrt_st_slow
+.endif
 	movem.l d0-d5,8(a2)
 	moveq #0,d0
 	move.w d7,d0
@@ -208,3 +214,11 @@ rt_skip:
 	movem.l (sp)+,d0-d1/a0-a1
 	sub.l d6,d5
 	rts
+
+.ifdef XRT_STATS
+	.data
+	.globl xrt_st_unk, xrt_st_slow
+xrt_st_unk:	.long 0
+xrt_st_slow:	.long 0
+	.text
+.endif

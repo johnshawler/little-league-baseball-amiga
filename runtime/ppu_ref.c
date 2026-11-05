@@ -1,6 +1,8 @@
 /* ppu_ref.c - per-dot reference PPU (2C02 NTSC).  One call per dot: slow, host only.  Structure and all timing rules follow the instrumented
  * reference emulator (Mesen) as read in the discovery phase; deviations are listed in FACTS.md ("unverified"). */
-#pragma GCC optimize ("no-strict-aliasing")   /* word accesses to byte arrays below; a strict-aliasing miscompilation was seen on the 68k build */
+#ifndef NOPRAGMA
+#pragma GCC optimize ("no-strict-aliasing")
+#endif
 #include "nes.h"
 #include "arender.h"
 Nes nes;
@@ -591,7 +593,11 @@ static __attribute__((noinline)) void fp_blank_line(Nes*n,int L){
     p->rowblank[L]=(uint8_t)(idx+1); p->rowok[L]=0; p->rowdirty[L]=1;
 }
 /* ---- scene log emission for arender (5-plane build) ----------------------------------------------------------------------------- */
-static int ar_prev_whole, ar_prev_blank;
+static int ar_prev_whole, ar_prev_blank, ar_late, ar_cur_exact;
+#ifdef ARDBG2
+extern char*getenv(const char*); extern int atoi(const char*); static int ardbg_f_init, ardbg_f_v; static int ardbg_f_get(void){ if(!ardbg_f_init){ ardbg_f_init=1; char*e=getenv("ARDBG_F"); ardbg_f_v=e?atoi(e):2000; } return ardbg_f_v; }
+#define ardbg_f ardbg_f_get()
+#endif
 static inline int ar_ok(int rend){ return rend ? ar_prev_whole : (ar_prev_whole||ar_prev_blank); }   /* the line before allows a plain region of this kind */
 static void ar_fill_region(Nes*n,ArRegion*r,int y0,int y1,uint16_t vl){
     Ppu*p=P; r->y0=(int16_t)y0; r->y1=(int16_t)y1; r->vl=vl; r->tx=(uint16_t)(p->t&0x041F); r->fx=p->fx; r->rend=(uint8_t)(p->rend!=0);
@@ -812,11 +818,21 @@ static __attribute__((noinline)) void fp_piece(Nes*n,int L,int a,int c1){
     Ppu*p=P; int rend=p->rend;
     int px=p->draw;                              /* produce chunky pixels in this piece */
 #ifdef FP_FASTLINE
-    if(p->ar_on && L<240){                       /* arender: whole plain lines are only logged, everything else is an exact (chunky) line */
-        int whole=(L>=0 && a==1 && c1==340);
-        if(whole && ar_ok(rend)){ if(rend) ar_whole(n,L,L); else ar_blank(n,L); px=0; }
-        else { if(L>=0) ar_log_exact(n,L); ar_prev_whole=whole && rend; ar_prev_blank=whole && !rend; }
-        p->ar_px=px;
+    if(p->ar_on && L<240){                       /* arender: a line is a plain region when no access lands in dots 1..255 and none in the line before at dots >= 261 (prefetch) */
+        if(a==1){ ar_late=0; ar_cur_exact=1;
+            if(L>=0){
+                if(c1>=256 && ar_ok(rend)){ ArRegion r; ar_fill_region(n,&r,L,L,decx_n(p->v,2)); ar_log_region(n,&r); ar_cur_exact=0; }
+                else { 
+#ifdef ARDBG2
+                    if(p->frame>=(unsigned)ardbg_f && p->frame<(unsigned)ardbg_f+3){ extern int fprintf(void*,const char*,...); extern void*stderr; fprintf(stderr,"exact: frame %u line %d first piece ..%d prev_whole=%d prev_blank=%d rend=%d\n",p->frame,L,c1,ar_prev_whole,ar_prev_blank,rend); }
+#endif
+                    ar_log_exact(n,L); }
+            }
+        }
+        px = (L>=0) ? ar_cur_exact : 1;
+        if(c1>=261 && c1<340 && !(L==-1 && c1==339)) ar_late=1;
+        p->ar_px = px || (c1>=261 && c1<340 && !(L==-1 && c1==339));
+        ar_prev_whole=!ar_late && rend; ar_prev_blank=!ar_late && !rend;
     }
 #endif
     if(L>=240){

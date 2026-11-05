@@ -6,6 +6,7 @@
 #include "rt.h"
 #include "arender.h"
 Rt rt;
+long xrt_st_steps, xrt_st_entries, xrt_st_dma;     /* slow path statistics (rt_x.c, printed by tools/rt_host.c with XRT_STATS=1) */
 Apu rt_apu;
 #ifdef AMIGA
 #define RT_CHK 0
@@ -212,7 +213,7 @@ void rt_init(const uint8_t *prg, const uint8_t *chr){
 }
 
 int rt_lazy;      /* host test option (RT_LAZY=1): the interpreter synchronises the PPU only when an access or an event needs it, like the translated program */
-static uint64_t lazy_limit;
+uint64_t lazy_limit;     /* cycle limit maintained by rt_step in lazy mode (also read by the slow path of the translated program) */
 int rt_step(void){
     rt.op_fetch=1; int r=cpu_step(&rt.cpu); rt.op_fetch=0;
     if(r<0) return r;
@@ -223,7 +224,7 @@ int rt_step(void){
         lazy_limit=rt_compute_limit_at(L); rt.ldirty=0;
     }
     rt_sync(3*(L-1)+5); nmi_advance(L-1);
-    if(rt.need_cycle!=RT_NEVER && rt.need_cycle<=L-1){ rt.need_cycle=RT_NEVER; cpu_nmi(&rt.cpu); }
+    if(rt.need_cycle!=RT_NEVER && rt.need_cycle<=L-1){ rt.need_cycle=RT_NEVER; cpu_nmi(&rt.cpu); if(rt_lazy){ lazy_limit=rt_compute_limit_at(rt.cyc); rt.ldirty=0; } }
     return 0;
 }
 void rt_run_interp(long frames){ while(rt.frames_done<frames){ if(rt_step()<0) return; } }

@@ -52,28 +52,35 @@ int xl_is_entry(uint16_t pc){
 }
 /* slow path: called with the translated registers saved in xrt_ctx (or d0==-1: initial entry).  Runs the interpreter for at least one
  * instruction and until the pc is a translated entry with some budget left; returns the pc, or -1 to leave the translated program. */
-int32_t xrt_slow_c(int32_t pc_in){
+extern long xrt_st_steps, xrt_st_entries, xrt_st_dma;
+extern uint64_t lazy_limit; extern int rt_lazy;
+int32_t xrt_slow_c(int32_t pc_in){ xrt_st_entries++;
     XCtx *c=&xrt_ctx; Cpu6502 *cpu=&rt.cpu;
     if(pc_in>=0){
         cpu->a=(uint8_t)c->d[0]; cpu->x=(uint8_t)c->d[1]; cpu->y=(uint8_t)c->d[2]; cpu->s=(uint8_t)c->d[3];
         cpu->p=(uint8_t)((c->nzc&0x82)|((c->d[4]&0xFF)?1:0)|(c->vflag&0x40)|(c->misc&0x0C)|0x20); cpu->pc=(uint16_t)pc_in;
         rt.cyc=rt.limit-(int64_t)(int32_t)c->d[5];
+        rt_lazy=1; lazy_limit=rt.limit; rt.ldirty=0;
         rt_nmi_check();
     }
 #ifndef AMIGA
     static uint64_t dlo=0,dhi=0; if(!dhi&&getenv("XDBGLO")){ dlo=strtoull(getenv("XDBGLO"),0,10); dhi=strtoull(getenv("XDBGHI"),0,10); } int dbg=dhi&&rt.cyc>dlo&&rt.cyc<dhi; if(dbg) fprintf(stderr,"slow in pc=%d cyc=%llu limit=%llu d5=%d\n",pc_in,(unsigned long long)rt.cyc,(unsigned long long)rt.limit,(int)c->d[5]);
 #endif
+    long st0=xrt_st_steps; uint64_t cyc0=rt.cyc, lim0=rt.limit; int pc0=pc_in;
     for(;;){
 #ifndef AMIGA
         if(dbg) fprintf(stderr,"  step pc=%04x cyc=%llu\n",cpu->pc,(unsigned long long)rt.cyc);
-        if(rt_step()<0){ fprintf(stderr,"illegal opcode at %04x\n",cpu->pc); exit(3); }
+        xrt_st_steps++; if(rt.need_halt) xrt_st_dma++; if(rt_step()<0){ fprintf(stderr,"illegal opcode at %04x\n",cpu->pc); exit(3); }
 #else
         if(rt_step()<0) rt_fatal(3);          /* undocumented opcode: never executed by this game */
 #endif
-        rt.limit=rt_compute_limit_at(rt.cyc); rt.ldirty=0;
+        rt.limit=lazy_limit;                       /* maintained by rt_step: recomputed only when an event or an access can have changed it */
         if(rt.frames_done>=c->frames_target) break;
         if(xl_is_entry(cpu->pc) && rt.limit>rt.cyc+24 && !rt.need_halt) break;
     }
+#ifndef AMIGA
+    if(getenv("XRT_LONG") && xrt_st_steps-st0>0 && rt.frames_done>=2000 && rt.frames_done<2003) fprintf(stderr,"long slow: %ld steps pc_in=%d cyc %llu limit %llu -> exit cyc %llu limit %llu pc %04x\n",xrt_st_steps-st0,pc0,(unsigned long long)cyc0,(unsigned long long)lim0,(unsigned long long)rt.cyc,(unsigned long long)rt.limit,cpu->pc);
+#endif
     c->d[0]=cpu->a; c->d[1]=cpu->x; c->d[2]=cpu->y; c->d[3]=cpu->s; c->d[4]=(cpu->p&1)?0xFF:0;
     c->nzc=cpu->p&0x82; c->vflag=cpu->p&0x40; c->misc=cpu->p&0x0C;
     c->d[5]=(uint32_t)(int32_t)(rt.limit-rt.cyc);
@@ -84,7 +91,7 @@ int32_t xrt_slow_c(int32_t pc_in){
 void xrt_run(long frames){
     XCtx *c=&xrt_ctx;
     c->frames_target=frames; c->ram=nes.ram; c->tabfix=(uint8_t*)tab_fix-0x30000; c->nztab=nztab; c->fixbase=(uint8_t*)nes.map.prg+7*16384-0x4000;
-    load_mapper_ptrs(); rt.limit=rt_compute_limit_at(rt.cyc); rt.ldirty=0;
+    load_mapper_ptrs(); rt.limit=rt_compute_limit_at(rt.cyc); rt.ldirty=0; rt_lazy=1; lazy_limit=rt.limit;
     extern void xrt_enter(void); xrt_enter();
 }
 
