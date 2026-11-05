@@ -22,14 +22,20 @@
 #include "nes.h"
 
 #define AR_STRIDE      32          /* bytes per plane row (256 pixels) */
-#define AR_MAX_REGIONS 24
+#define AR_MAX_REGIONS 240          /* one region per line at most */
 #define AR_MAX_PAL     16
-#define AR_MAX_CFG     8           /* persistent background bitmaps (one per CHR bank pair / pattern table / mirroring configuration) */
+#define AR_MAX_CFG     4           /* persistent background bitmaps (one per BG CHR bank / mirroring configuration), LRU */
+#define AR_BROW        72          /* bytes per bitmap row: 64 (512 pixels) + 8 guard bytes = copy of bytes 0..7, so a 256 pixel window never has to wrap */
+#define AR_BROWS       512         /* rows per bitmap: 4 logical nametables x 256 (32 tile rows of 8) */
 
 /* a run of whole lines [y0,y1] drawn from the same configuration; line y0 starts with v = vl (coarse X/Y, nametable, fine Y: bits as the PPU's v register),
  * following lines follow the PPU progression (increment Y, copy the horizontal bits of tx) */
 typedef struct {
     int16_t  y0, y1;
+    uint8_t  kind;                 /* stage 2b: AR_BG, AR_EXACT or AR_BLANK (see below) */
+    uint8_t  cfg;                  /* AR_BG: background bitmap (ar_bmp(cfg, plane, row)) */
+    uint16_t row0;                 /* AR_BG: bitmap row shown on line y0; line y shows row0 + (y - y0) (regions are split where the rows wrap) */
+    uint8_t  bytex;                /* AR_BG: byte (0..63) of the row where the 256 pixel window starts = nametable x * 32 + coarse X; pixel scroll = bytex*8 + fx */
     uint16_t vl;                   /* v at the output start of line y0 (tile 0 of the line is fetched with vl) */
     uint16_t tx;                   /* t & 0x041F at the time: horizontal bits copied at dot 257 of every line */
     uint8_t  fx;                   /* fine X */
@@ -41,10 +47,14 @@ typedef struct {
     uint8_t  mirror;               /* nametable mirroring in force */
     uint8_t  chr_lo, chr_hi;       /* 4 KB CHR bank numbers at PPU $0000 / $1000 */
     uint8_t  gray, emph;           /* mask bits */
+    uint8_t  exact;                /* 1: the lines of this entry are exact chunky rows (nes.ppu.fb, converted to the planes by ar_end_frame); only the display state (palette, mask) is meaningful */
     uint8_t  pal[32];              /* palette RAM at the start of the region (palette writes inside a region split it) */
 } ArRegion;
 
 
+#define AR_BG    0     /* background from the persistent bitmap (pointer = ar_bmp + bytex, fine scroll fx), sprites from the sprite layer ar_hw.spr */
+#define AR_EXACT 1     /* rows y0..y1 of ar_hw.xpf1 / ar_hw.xpf2 (the line already composed, split into the two playfields) */
+#define AR_BLANK 2     /* backdrop only: blank_idx */
 typedef struct {
     ArRegion reg[AR_MAX_REGIONS]; int nreg;
     uint8_t  exact[240];           /* 1: row comes from the exact chunky renderer */
@@ -57,6 +67,23 @@ typedef struct {
     int      nreg; ArRegion reg[AR_MAX_REGIONS];   /* display state per region */
 } ArFrame;
 
+/* Stage 2b display format (dual playfield on AGA): playfield 1 (odd planes) = background, 4 planes, colour registers 0..15 (registers 4, 8, 12 = backdrop,
+ * like register 0); playfield 2 (even planes) = sprites, 4 planes, value v = 4*palette+pattern (0 = transparent), colour registers 16..31.  Sprites that are
+ * behind the background are already masked against the background pixels in the sprite layer; the sprite layer is screen aligned (scroll 0).
+ * ar_hw: plane pointers for the Copper; bitmaps/layers should live in chip RAM (ar_hw_setmem).  Regions of kind AR_EXACT use xpf1/xpf2 rows y0..y1. */
+typedef struct {
+    uint8_t *bmp;                       /* AR_MAX_CFG * 4 planes * AR_BROWS rows * AR_BROW bytes (persistent background bitmaps) */
+    uint8_t *spr;                       /* sprite layer: 4 planes * 240 rows * AR_STRIDE bytes */
+    uint8_t *xpf1, *xpf2;               /* exact lines: 4 planes * 240 rows * AR_STRIDE bytes each (playfield 1 / playfield 2 encoding) */
+} ArHw;
+extern ArHw ar_hw;
+#define AR_BMP(cfg,plane,row) (ar_hw.bmp + ((((unsigned)(cfg)*4u+(plane))*AR_BROWS+(row))*AR_BROW))
+#define AR_SPR(plane,row)     (ar_hw.spr  + (((unsigned)(plane)*240u+(row))*AR_STRIDE))
+#define AR_XPF1(plane,row)    (ar_hw.xpf1 + (((unsigned)(plane)*240u+(row))*AR_STRIDE))
+#define AR_XPF2(plane,row)    (ar_hw.xpf2 + (((unsigned)(plane)*240u+(row))*AR_STRIDE))
+void ar_hw_setmem(void *chip);          /* optional: place bmp/spr/xpf1/xpf2 (AR_HW_BYTES) in chip RAM; default: static arrays */
+#define AR_HW_BYTES (AR_MAX_CFG*4*AR_BROWS*AR_BROW + 3*4*240*AR_STRIDE)
+void ar_expand_hw(const ArFrame *f, uint8_t *fb);   /* host: what the dual playfield display shows for the stage 2b regions, as palette indices (compared with the reference) */
 void ar_init(void);                               /* tables: CHR planar conversion etc. (needs nes.map.chr) */
 void ar_begin_frame(Nes *n);
 void ar_log_region(Nes *n, const ArRegion *r);    /* appends; merges with the previous region when the parameters match and the progression continues */

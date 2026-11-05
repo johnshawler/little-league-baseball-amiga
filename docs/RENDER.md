@@ -48,3 +48,20 @@ emphasis).  Stage 2: Copper list per region.
   entries, gray/emphasis of every region: load the colour registers at `y0`).  `nes.ppu.fb` then only holds the exact rows; do NOT convert it any more.
 * The planes are exactly what `display_frame` used to produce from `fb` with c2p, so the first integration step is a plain copy of the 5 planes (38 KB)
   into the display buffer plus the per-region colour changes; later steps point the display at persistent bitmaps (stage 2).
+
+## Stage 2b: hardware format (agreed interface, to be implemented in arender.c / display_ar.c)
+No per-line shifting of background rows.  `ar_end_frame` produces regions of three kinds (`ArRegion.kind`):
+* `AR_BG`: lines y0..y1 show bitmap rows `row0 .. row0+(y1-y0)` of background bitmap `cfg` (`AR_BMP(cfg,plane,row)`, 4 planes, rows of `AR_BROW`=72 bytes: 64
+  bytes = 512 pixels plus 8 guard bytes so a 256 pixel window starting at byte `bytex` (0..63) never wraps).  Plane pointer = `AR_BMP(cfg,plane,row0) + bytex`,
+  rounded down to the fetch granularity of the platform's FMODE, the remainder goes into the horizontal scroll: scroll in pixels = (bytex mod g)*8 + fx
+  (g = pointer granularity in bytes).  Display modulo = AR_BROW - width fetched.  Regions are split where the row sequence jumps (Y wrap) and where the first
+  line's x differs from the following lines.
+* `AR_EXACT`: lines already composed (exact lines, clipped / background-disabled lines): rows y0..y1 of `ar_hw.xpf1` (background playfield, planes 0..3, scroll 0) and
+  `ar_hw.xpf2` (sprite playfield).
+* `AR_BLANK`: backdrop only (blank_idx).
+Playfield 1 = odd bitplanes = background value 0..15 (colour registers 0..15, registers 4, 8, 12 = copy of register 0); playfield 2 = even bitplanes = sprite value
+v = 4*palette + pattern (0 transparent; colour registers 16..31).  Sprites live in `ar_hw.spr` (4 planes x 240 rows x 32 bytes, screen aligned) and are composed per
+line with the exact NES rules (8 per line, priority, claim, flips, clip); a sprite behind the background is masked against the background pixel (read from the
+bitmap at the scrolled position) while composing.  The layer is cleared incrementally (only rows written in the previous frame).  Per-region colour state as before
+(`pal[32]`, gray, emph); every line is covered by exactly one region.
+`ar_expand_hw()` expands exactly this display model (bitmap window + sprite layer, playfield 2 over playfield 1) to palette indices; the host check compares it with the reference.
