@@ -54,6 +54,7 @@ if [ -n "$DISPLAY_TEST" ]; then  # test build: alternate two stored frames (2 x 
   printf '\t.section .rodata\n\t.even\n\t.globl dtest_frames\ndtest_frames:\n\t.incbin "%s"\n' "$DISPLAY_TEST" > $B/dtest.s
   $AS $B/dtest.s -o $B/dtest.o; SNAPOBJ="$SNAPOBJ $B/dtest.o"; CFLAGS="$CFLAGS -DDISPLAY_TEST"
 fi
+HW2O=""; if [ "$ARHW_TEST" = 1 ]; then CFLAGS="$CFLAGS -DARHW_TEST"; HW2O="$B/display_ar2.o $B/arhw_test.o"; fi   # ARHW_TEST=1: synthetic stage 2b display test (platform-a1200/arhw_test.c)
 # 1. translated program + dispatch tables (sparse), palette
 python3 translator/x65.py "$ROM" translator/seen_abs.txt $B/code.s $B/tab.s $B/report.txt
 python3 tools/gen_tabsp.py $B/tab.s $B/tabsp.s
@@ -63,7 +64,7 @@ $AS $B/code.s -o $B/code.o; $AS $B/tabsp.s -o $B/tabsp.o; $AS $R/rt_x.s -o $B/rt
 for f in rt_core rt_x cpu6502 ppu_ref arender mapper_mmc1 apu; do $CC $RTFLAGS -c $R/$f.c -o $B/$f.o; done
 # 3. platform
 DISP=display; C2PO=$B/c2p.o; if [ "$ARENDER_HW" = 1 ]; then DISP=display_ar; C2PO=""; fi
-for f in main $DISP audio platform telem libc tabs palette; do $CC $CFLAGS -I$P -I$B -I$R -c $P/$f.c -o $B/$f.o; done
+for f in main $DISP $([ -n "$HW2O" ] && echo "display_ar2 arhw_test") audio platform telem libc tabs palette; do $CC $CFLAGS -I$P -I$B -I$R -c $P/$f.c -o $B/$f.o; done
 $CC -m68020 $AS5 -x assembler -c $P/c2p.s -o $B/c2p.o; $CC -m68020 -x assembler -c $P/crt0.s -o $B/crt0.o
 $CC -m68020 -x assembler -c $P/isr.s -o $B/isr.o; $CC -m68020 -x assembler -c $P/rom.s -o $B/rom.o
 $CC -m68020 $ASF -x assembler -c $P/boot.s -o $B/boot_o.o
@@ -72,7 +73,7 @@ $LD -e 0 -Ttext=0 --oformat=binary -o $B/boot.bin $B/boot_o.o
 # 4. link
 LIBGCC=$($CC -m68020 -print-libgcc-file-name)
 $LD -T $P/$LDS -Map=$B/llb.map -o $B/llb.elf $B/crt0.o $B/code.o $B/rt_x_s.o $B/rt_x.o $B/rt_core.o $B/ppu_ref.o $B/arender.o $B/cpu6502.o $B/mapper_mmc1.o $B/apu.o \
-   $C2PO $B/$DISP.o $B/main.o $B/audio.o $B/platform.o $B/telem.o $B/isr.o $B/libc.o $B/tabs.o $B/palette.o $B/tabsp.o $B/rom.o $SNAPOBJ $LIBGCC
+   $C2PO $B/$DISP.o $B/main.o $HW2O $B/audio.o $B/platform.o $B/telem.o $B/isr.o $B/libc.o $B/tabs.o $B/palette.o $B/tabsp.o $B/rom.o $SNAPOBJ $LIBGCC
 ${PREFIX}objcopy -O binary $B/llb.elf $B/llb.bin
 # 5. put the ROM (PRG then CHR, without the iNES header) into the .rom placeholder and build the disk
 python3 - "$ROM" $B/llb.elf $B/llb.bin $PBASE <<'PY'

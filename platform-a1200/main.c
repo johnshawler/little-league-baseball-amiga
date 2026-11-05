@@ -172,7 +172,10 @@ static void stage(uint32_t n) { uint32_t w[2] = { TELEM_MAGIC, 0x80000000u | n }
 #else
 #define stage(n) ((void)0)
 #endif
-#ifdef DISPLAY_TEST    /* display pacing test: two stored 256x240 frames are shown alternately, one per game clock tick, without emulation (how many pictures are converted on PAL/NTSC, cost of a full conversion) */
+#if defined(ARHW_TEST)    /* stage 2b display hardware test (arhw_test.c) */
+void arhw_test_main(void);
+void main(void) { arhw_test_main(); }
+#elif defined(DISPLAY_TEST)    /* display pacing test: two stored 256x240 frames are shown alternately, one per game clock tick, without emulation (how many pictures are converted on PAL/NTSC, cost of a full conversion) */
 extern const uint8_t dtest_frames[];
 void main(void)
 {

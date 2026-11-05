@@ -7,6 +7,7 @@
 #  2. real keyboard path (xdotool): Return = Start, arrows, Right Ctrl = A through the title, menus and "Watch Game" to the team selection; every screenshot must equal some reference frame
 #  3. controller / keyboard input of both joystick ports and the second button, read back through the telemetry
 #  4. audio chain: the PCM of the runtime for 420 frames is replayed through audio.c, recorded from FS-UAE, compared with the reference
+#  4b. stage 2b display hardware: synthetic dual playfield scene (platform-a1200/arhw_test.c), Copper list from display_ar2.c, compared with tests/amiga/arhw_expect.py
 #  5. display flip logic: how many of 600 game frames can be shown (PAL 50 Hz: 5 of 6)
 set -e
 ROM=$(readlink -f "$1"); W=$(readlink -f "${2:?workdir}"); STD=${3:-both}
@@ -63,6 +64,14 @@ for s in $STDS; do
   for k in 1 2; do python3 tests/amiga/match_ref.py $W/hkb_${s}_k${k}_full.png $W/ref_all.fb $s || KBFAIL=1; done
 done
 echo "keyboard regression: $([ $KBFAIL = 0 ] && echo PASS || echo FAIL)"
+echo "== stage 2b display hardware (dual playfield, Copper list builder, synthetic scene; 0 pixels tolerance)"
+printf 'sleep 12\nfull a1\n' > $W/a2.sh
+ARHWFAIL=0
+for s in $STDS; do
+  ARHW_TEST=1 FAST=1 run arhw_$s $s arhw_$s 10 $W/a2.sh
+  python3 tests/amiga/arhw_expect.py $W/arhw_${s}_a1_full.png $s || ARHWFAIL=1
+done
+echo "stage 2b display: $([ $ARHWFAIL = 0 ] && echo PASS || echo FAIL)"
 echo "== controllers (telemetry)"
 cat > $W/joy.sh <<'EOS'
 sleep 6
