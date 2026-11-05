@@ -40,18 +40,29 @@ for s in $STDS; do
   for fr in 100 300 400 1200 1600 3000 5000; do python3 tests/amiga/cmp_shot.py $W/sc_${s}_${fr}_g1_full.png $W/ref_scenes.fb $fr $s || true; done
 done
 [ "$ONLY" = scenes ] && exit 0
-echo "== keyboard path (pal)"
+echo "== free-running keyboard path (long waits; every screenshot must equal a reference frame exactly: tolerance 0 pixels)"
 cat > $W/kb.sh <<'EOS'
 tap() { xdotool keydown $1; sleep ${2:-0.25}; xdotool keyup $1; }
-sleep 6; full k0
-tap Return; sleep 3; full k1
-tap Down; sleep 3; full k2
-tap Control_R; sleep 3; full k3
-tap Down; sleep 1.5; tap Down; sleep 3; full k4
-tap Control_R; sleep 6; full k5
+sleep 8; full k0
+tap Return; sleep 12; full k1
+tap Down; sleep 12; full k2
+tap Control_R; sleep 12; full k3
+tap Down; sleep 4; tap Down; sleep 12; full k4
+tap Control_R; sleep 14; full k5
 EOS
-FAST=1 run kb pal kb 10 $W/kb.sh
-for k in 1 2 3 4 5; do python3 tests/amiga/match_ref.py $W/kb_k${k}_full.png $W/ref_all.fb pal; done
+KBFAIL=0
+for s in $STDS; do
+  FAST=1 run kb_$s $s kb_$s 10 $W/kb.sh
+  for k in 1 2 3 4 5; do python3 tests/amiga/match_ref.py $W/kb_${s}_k${k}_full.png $W/ref_all.fb $s || KBFAIL=1; done
+done
+echo "== free-running keyboard path through the HDF (boots from the hard disk image, long waits, 0 pixels tolerance)"
+tools/build_hdf.sh "$ROM" $W/llb_test.hdf >/dev/null 2>&1 || echo "HDF build failed"
+printf 'sleep 14\ntap() { xdotool keydown $1; sleep ${2:-0.25}; xdotool keyup $1; }\ntap Return; sleep 12; full k1\ntap Down; sleep 12; full k2\n' > $W/hkb.sh
+for s in $STDS; do
+  ( cd $T && HDF=$W/llb_test.hdf FAST=1 bash run_hdf.sh $s $W/hkb_$s 10 $W/hkb.sh >/dev/null 2>&1 )
+  for k in 1 2; do python3 tests/amiga/match_ref.py $W/hkb_${s}_k${k}_full.png $W/ref_all.fb $s || KBFAIL=1; done
+done
+echo "keyboard regression: $([ $KBFAIL = 0 ] && echo PASS || echo FAIL)"
 echo "== controllers (telemetry)"
 cat > $W/joy.sh <<'EOS'
 sleep 6

@@ -19,3 +19,4 @@ for o in range(0, len(d), rec):
     n = int((exp[:240 - ign] != got[:240 - ign]).sum())
     if n < best[0]: best = (n, fr)
 print('%s: closest reference frame %d, %d pixels differ' % (os.path.basename(shot), best[1], best[0]))
+sys.exit(0 if best[0] <= int(os.environ.get('TOL', '0')) else 1)
