@@ -163,7 +163,9 @@ def liveness(prog,blocks):
     return live_in
 
 # ----------------------------------------------------------------------------------------------------------------------------------------
+QEMU_SAFE=bool(os.environ.get('XL_QEMU_SAFE'))      # qemu-m68k 8.2.2 mis-evaluates a Bcc after BTST #n,<memory> when a translation block ends between the two (page end); code for qemu builds tests the byte through a data register instead
 DEBUG_BLOCKS=bool(os.environ.get('XL_DEBUG_BLOCKS'))
+DEBUG_PCS=set(int(x,16) for x in open(os.environ['XL_DEBUG_PCS']).read().split()) if os.environ.get('XL_DEBUG_PCS') else None      # debug hook only in the blocks starting at these addresses
 CTX_ADJ=4          # word: adjustment for the access cycle of the next helper call
 CTX_PTMP=6
 INTERP_ONLY_MODES={'izx'}
@@ -188,7 +190,7 @@ class Gen:
             # the entry check also reserves one cycle per possible page-crossing penalty so that dynamic extras cannot run past the cycle limit
             self.e(f'sub.l #{self.tot+npen},d5'); self.e(f'bmi {slow}')
             if npen: self.e(f'add.l #{npen},d5')
-            if DEBUG_BLOCKS: self.e(f'move.w #0x{key[1]:X},d7'); self.e(f'move.w #{self.tot},(4,a2)'); self.e('jsr rt_dbg_blk')
+            if DEBUG_BLOCKS and (DEBUG_PCS is None or key[1] in DEBUG_PCS): self.e(f'move.w #0x{key[1]:X},d7'); self.e(f'move.w #{self.tot},(4,a2)'); self.e('jsr rt_dbg_blk')
             self.stubs.append((slow,[f'add.l #{self.tot+npen},d5',f'move.w #0x{key[1]:X},d7','jmp rt_slow']))
         for idx,i in enumerate(ins):
             self.i=i; self.idx=idx; self.next=ins[idx+1] if idx+1<len(ins) else None
@@ -345,7 +347,9 @@ class Gen:
             if fz and fz[0]=='ccr': return 'eq' if want else 'ne'
             if fz and fz[0]=='reg': self.e(f'tst.b {fz[1]}'); return 'eq' if want else 'ne'
             if fz and fz[0]=='bit': self.e('tst.b d7'); return 'eq' if want else 'ne'
-            self.e(f'btst #1,({CTX_NZC},a2)'); return 'ne' if want else 'eq'
+            if QEMU_SAFE: self.e(f'move.b ({CTX_NZC},a2),d7'); self.e('btst #1,d7')
+            else: self.e(f'btst #1,({CTX_NZC},a2)')
+            return 'ne' if want else 'eq'
         if f=='N':
             if fz and fz[0]=='ccr': return 'mi' if want else 'pl'
             if fz and fz[0]=='reg': self.e(f'tst.b {fz[1]}'); return 'mi' if want else 'pl'
@@ -356,7 +360,9 @@ class Gen:
             self.e('tst.b d4'); return 'ne' if want else 'eq'
         if f=='V':
             if fz and fz[0]=='bit': self.e('btst #6,d6'); return 'ne' if want else 'eq'
-            self.e(f'btst #6,({CTX_V},a2)'); return 'ne' if want else 'eq'
+            if QEMU_SAFE: self.e(f'move.b ({CTX_V},a2),d7'); self.e('btst #6,d7')
+            else: self.e(f'btst #6,({CTX_V},a2)')
+            return 'ne' if want else 'eq'
 
     # ------------------------------------------------------------------ instructions
     def gen_ins(self,i):
