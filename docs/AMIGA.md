@@ -440,3 +440,24 @@ Status: builder and display mode verified on the synthetic scene (PAL and NTSC, 
 * **Speed** (PAL, fast RAM, FS-UAE default timing, snapshots of the play script, ticks 1500..7000; chunky path of section 17 in brackets): menu **29.9 %** (67 %), line-up **25.7 %** (19.7 %), field **24.4 %** (22.6 %); 380 s Watch Game run (snapshot 1600): frames 2213 -> 8525 in ticks 2373 -> 25388 = **27.4 %** (22.8 %); display converts nothing any more (the Copper list is the display), 1732 pictures shown.
   Per frame ms (menu / line-up / field): translated 5.1 / 8.4 / 8.6, rt_x.s 2.4 / 3.3 / 3.4, rt_x.c 3.0 / 3.7 / 3.9, rt_core 7.1 / 7.6 / 8.1, PPU model 11.0 / 9.2 / 9.5, cpu6502 1.1 / 1.6 / 1.6, APU 0.7 / 0.9 / 1.1, main/audio/platform 1.3 / 1.4 / 1.5, **arender (counted under libgcc/other) 23.8 / 28.6 / 30.4**.
   Hottest: `ensure_trow` 14 / 21 / 22 % of all samples (rebuilding bitmap tile rows), `ar_flush` 4-6 %, `ar_begin_frame`/`ar_end_frame` 2.5-3.5 % each. The menu is slower than the chunky path (the chunky PPU skips undrawn frames cheaply and the title screens change the bitmaps constantly); gameplay is 8-13 % faster, and with arender's `ensure_trow` fixed it should gain much more (arender is now the largest single component).
+
+### 19.2 State at 90af238 (= 1025759 + profile categories): tests, speed, whole-picture table
+Tests (FS-UAE A1200 + 8 MB fast RAM, `FAST=1`, clean worktree, `run_tests.sh` full set PAL + NTSC): scenes **14 of 14** pixel-exact; mid-frame palette frames 42, 1324, 2451, 3018, 4082 PAL + NTSC **10 of 10**; free-running keyboard ADF (PAL + NTSC, frames 45/151/186/301/345) and HDF (45/151) **0 pixels**; ARHW_TEST PAL + NTSC **0 pixels**; joystick/keyboard ports, audio chain (underruns 0), flip logic (PAL 499 of 600 frames shown, NTSC 598) as before. No exactness problem seen around frame 2650 (scene 3000 and the free-running tests pass).
+Speed (PAL, fast RAM, default timing, snapshots, ticks 1500..7000, one category scheme: arender.o has its own row, display code is part of "display + main/audio/platform"; the profile build's scripted `input()` scans the script on every read and `telem_draw` is test-only, together ~1.3 ms of that row):
+
+| ms per NES frame | menu (100) | line-up (1200) | field (2000) |
+|---|---|---|---|
+| frames in 5500 ticks / speed | 2090 / **38.0 %** | 1846 / **33.6 %** | 1909 / **34.7 %** |
+| translated 6502 code | 6.2 | 9.2 | 8.2 |
+| rt_x.s (dispatch glue) | 2.7 | 3.4 | 3.3 |
+| rt_x.c (I/O helpers, slow path) | 3.3 | 4.0 | 3.9 |
+| rt_core (time model, PPU register access) | 7.4 | 8.0 | 8.0 |
+| ppu_ref (PPU model) | 10.6 | 9.2 | 9.5 |
+| cpu6502 + mapper | 1.2 | 1.7 | 1.5 |
+| APU (cue) | 0.9 | 1.1 | 1.1 |
+| arender | 8.7 | 10.2 | 9.7 |
+| display (ar2_build, plat) + main/audio/platform | 2.8 | 2.7 | 2.7 |
+| total | 43.8 | 49.6 | 48.0 |
+
+380 s Watch Game run (snapshot 1600): frames 2481 -> 11413 in ticks 2376 -> 25376 = **38.8 %** (chunky path 22.8 %); 2454 pictures shown. (Previous stage 2b state 69e4a07: 25.7 / 24.4 / 27.4 %.)
+`ar2_build` is below the resolution of the profile (`pal_items` 0.4 % of samples; the Copper list costs well under 1 ms per picture); the frame hook, input poll and platform code together are about 2 ms. To reach 100 % the frame must fit 16.6 ms: the next targets are the PPU model + `rt_core` + `rt_x` (about 24 ms together: every PPU register access and time-model sync), arender (~10 ms), and the translated code (~8 ms, dominated by cycle accounting).
