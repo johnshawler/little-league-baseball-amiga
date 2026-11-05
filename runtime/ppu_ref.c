@@ -1,7 +1,9 @@
 /* ppu_ref.c - per-dot reference PPU (2C02 NTSC).  One call per dot: slow, host only.  Structure and all timing rules follow the instrumented
  * reference emulator (Mesen) as read in the discovery phase; deviations are listed in FACTS.md ("unverified"). */
 #include "nes.h"
+#include "arender.h"
 Nes nes;
+int ppu_ar_enable;
 #define P (&n->ppu)
 
 static inline uint16_t nt_off(const Mapper *m, uint16_t a){
@@ -18,7 +20,7 @@ static uint8_t vram_read(Nes *n, uint16_t a){
 static void vram_write(Nes *n, uint16_t a, uint8_t v){
     a&=0x3FFF;
     if(a<0x2000) return;
-    if(a<0x3F00){ uint16_t o=nt_off(&n->map,a); P->nt[o]=v; P->ntv[o>>5]++; P->ntver_all++; return; }
+    if(a<0x3F00){ uint16_t o=nt_off(&n->map,a); P->nt[o]=v; P->ntv[o>>5]++; P->ntver_all++; if(P->ar_on && P->line>=0 && P->line<240) ar_scene.overflow=1; return; }
     uint8_t i=a&0x1F; v&=0x3F;
     if((i&3)==0){ if(P->pal[i&0x0F]!=v||P->pal[(i&0x0F)|0x10]!=v) PALVAR(P); P->pal[i&0x0F]=v; P->pal[(i&0x0F)|0x10]=v; } else { if(P->pal[i]!=v) PALVAR(P); P->pal[i]=v; }
 }
@@ -237,7 +239,7 @@ void ppu_reg_write(Nes *n, uint16_t a, uint8_t v){
     case 3: p->oamaddr=v; break;
     case 4:
         if(p->fp) fp_oam_fix(n);
-        if(p->line>=240 || !p->rend){ uint8_t b=v; if((p->oamaddr&3)==2) b&=0xE3; p->oam[p->oamaddr]=b; p->oamaddr++; p->oam_dirty=1; }
+        if(p->line>=240 || !p->rend){ uint8_t b=v; if((p->oamaddr&3)==2) b&=0xE3; p->oam[p->oamaddr]=b; p->oamaddr++; p->oam_dirty=1; if(p->ar_on && p->line>=0 && p->line<240) ar_scene.overflow=1; }
         else p->oamaddr+=4;
         break;
     case 5:
@@ -293,6 +295,10 @@ typedef uint32_t __attribute__((may_alias)) u32a;                     /* word ac
 typedef uint32_t __attribute__((may_alias, aligned(1))) u32u;         /* the same, possibly unaligned */
 #if defined(PPU_FB8) || defined(PPU_FB5)
 #define FB_BYTES 1
+#endif
+#ifndef PPU_FB5
+#define AR_BEGIN(n) ((void)0)
+#define AR_PIECE(n,L,a,c1) ((void)0)
 #endif
 #ifdef PPU_FB5
 #define FP_FASTLINE 1          /* 5-plane build: background row cache and tight whole-line loops (fp_line) */
@@ -583,6 +589,23 @@ static __attribute__((noinline)) void fp_blank_line(Nes*n,int L){
     uint32_t c=(uint32_t)idx*0x01010101u; u32a*r=(u32a*)&p->fb[L<<8]; for(int x=0;x<64;x++) r[x]=c;
     p->rowblank[L]=(uint8_t)(idx+1); p->rowok[L]=0; p->rowdirty[L]=1;
 }
+/* ---- scene log emission for arender (5-plane build) ----------------------------------------------------------------------------- */
+static int ar_prev_whole;
+static void ar_fill_region(Nes*n,ArRegion*r,int y0,int y1,uint16_t vl){
+    Ppu*p=P; r->y0=(int16_t)y0; r->y1=(int16_t)y1; r->vl=vl; r->tx=(uint16_t)(p->t&0x041F); r->fx=p->fx; r->rend=(uint8_t)(p->rend!=0);
+    r->blank_idx=(uint8_t)(((p->v&0x3F00)!=0x3F00)?0:(p->v&0x1F)); r->bg_en=p->bg_en; r->sp_en=p->sp_en; r->min_bg=p->min_bg; r->min_sp=p->min_sp;
+    r->bgpat=p->bgpat?1:0; r->sppat=p->sppat?1:0; r->large=p->large; r->mirror=n->map.mirror; r->chr_lo=(uint8_t)(n->map.chr_lo>>12); r->chr_hi=(uint8_t)(n->map.chr_hi>>12);
+    r->gray=p->gray; r->emph=p->emph; for(int i=0;i<32;i++) r->pal[i]=p->pal[i];
+}
+static void ar_whole(Nes*n,int y0,int y1){        /* whole lines y0..y1 are about to be processed; p->v is still the value after the line before */
+    Ppu*p=P; if(!p->ar_on) return;
+    if(!ar_prev_whole) ar_log_exact(n,y0);
+    ar_prev_whole=1; ArRegion r; ar_fill_region(n,&r,y0,y1,decx_n(p->v,2)); ar_log_region(n,&r);
+}
+static void ar_blank(Nes*n,int y){ Ppu*p=P; if(!p->ar_on) return; ArRegion r; ar_fill_region(n,&r,y,y,0); ar_log_region(n,&r); ar_prev_whole=0; }
+static void ar_begin(Nes*n){ Ppu*p=P; p->ar_on=0; if(ppu_ar_enable && p->draw){ p->ar_on=1; ar_prev_whole=0; ar_begin_frame(n); } }
+#define AR_BEGIN(n) ar_begin(n)
+#define AR_PIECE(n,L,a,c1) do{ if(P->ar_on){ if(L>=0) ar_log_exact(n,L); ar_prev_whole=0; } }while(0)
 static void fp_line(Nes*n,int L);
 /* ---- batches of whole lines: background validity per batch ------------------------------------------------------------------------
  * A run of whole lines (no access in between) is described by BatchKey (scroll at its start, parameters, name table write counter, extent).  When the key is the
@@ -592,7 +615,7 @@ static uint32_t bkey[240][4]; static uint8_t bkvalid[240]; static int16_t bowner
 static void bk_inval(int L){ int o=bowner[L]; if(o>=0 && o<240) bkvalid[o]=0; }
 static int bk_init_done;
 static void bk_init(void){ for(int i=0;i<240;i++) bowner[i]=-1; bk_init_done=1; }
-static void step_line(Nes*n,int y){ Ppu*p=P; p->dots+=341; p->line=y; p->cx=340; p->fcur^=1; p->fc[p->fcur^1].y=-1; fp_line(n,y); }
+static void step_line(Nes*n,int y){ Ppu*p=P; ar_whole(n,y,y); p->dots+=341; p->line=y; p->cx=340; p->fcur^=1; p->fc[p->fcur^1].y=-1; fp_line(n,y); }
 /* packed sprites of output line y from the tables (sprite pattern bytes fetched with the current parameters); returns the number of visible slots */
 static int sprite_pw(Nes*n,int y,uint32_t*pw){
     Ppu*p=P; int e=y-1, na=0; if(e<0) return 0;
@@ -654,7 +677,7 @@ static void batch_segment(Nes*n,int a,int b){
         if(!pre){ for(int i=0;i<4;i++) bkey[a][i]=key[i]; bkvalid[a]=1; for(int y=a;y<=b;y++){ int o=bowner[y]; if(o>=0 && o!=a) bkvalid[o]=0; bowner[y]=(int16_t)a; } }
         return;
     }
-    ST(5);
+    ST(5); ar_whole(n,a,b);
 #ifdef FPDBG
     if(a<=106&&106<=b&&p->frame>=1565&&p->frame<=1575){ extern int fprintf(void*,const char*,...); extern void*stderr; fprintf(stderr,"valid batch %d..%d frame %u rsk106=%04x rowok=%d draw=%d\n",a,b,p->frame,rsk[106],p->rowok[106],p->draw); }
 #endif
@@ -786,13 +809,14 @@ static void fp_line(Nes*n,int L){
 /* ---- one piece: the dots a..c1 (1 <= a <= c1 <= 340) of line L; parameters constant, no pending update ---------------------------------- */
 static __attribute__((noinline)) void fp_piece(Nes*n,int L,int a,int c1){
     Ppu*p=P; int rend=p->rend;
+    if(L<240) AR_PIECE(n,L,a,c1);
     if(L>=240){
         if(L==241 && a<=1 && c1>=1){ if(!p->prevent_vbl){ p->vbl=1; if(p->ctrl&0x80) p->nmi_level=1; } p->prevent_vbl=0; }
         return;
     }
     if(L<0){
         if(a<=1 && c1>=1){ p->vbl=0; p->nmi_level=0; }
-        if(rend && p->oamaddr>=8 && a<=8){ for(int cx=a;cx<=c1&&cx<=8;cx++){ p->oam[cx-1]=p->oam[(p->oamaddr&0xF8)+cx-1]; p->oam_dirty=1; } }
+        if(rend && p->oamaddr>=8 && a<=8){ for(int cx=a;cx<=c1&&cx<=8;cx++){ p->oam[cx-1]=p->oam[(p->oamaddr&0xF8)+cx-1]; p->oam_dirty=1; if(p->ar_on) ar_scene.overflow=1; } }
     } else if(rend && !p->spovf){
         lt_ensure(n);
         if(p->lt_cnt[L]>=8){ int o=lt_ovf_cx(n,L); if(o && a<=o && o<=c1) p->spovf=1; }
@@ -833,7 +857,7 @@ static void fp_first_cycle(Nes*n){
     Ppu*p=P; p->dots++; p->cx=0;
     if(++p->line>260){ p->line=-1; p->sp_count=0; }
     if(p->line==241 && !ppu_noinput) nes_input_poll();
-    if(p->line<240){ if(p->line==-1){ p->spovf=0; p->sp0hit=0; } }
+    if(p->line<240){ if(p->line==-1){ p->spovf=0; p->sp0hit=0; AR_BEGIN(n); } }
     else if(p->line==240){ p->frame++; p->frame_done=1; }
     if(p->line>=0 && p->line<240){ p->fcur^=1; p->fc[p->fcur^1].y=-1; }
     else { p->fc[0].y=p->fc[1].y=-1; p->fcur=0; }
@@ -856,7 +880,7 @@ void ppu_fp_run(Nes*n,uint64_t target){
                     else for(int i=0;i<mm;i++){
                         p->dots+=341; p->line++; p->cx=340;
                         p->fcur^=1; p->fc[p->fcur^1].y=-1;
-                        p->fc[0].y=p->fc[1].y=-1; fp_blank_line(n,p->line);
+                        p->fc[0].y=p->fc[1].y=-1; ar_blank(n,p->line); fp_blank_line(n,p->line);
                     }
                     continue;
                 }

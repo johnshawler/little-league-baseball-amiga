@@ -72,6 +72,7 @@ typedef struct {
     uint8_t  lt_cnt[240];             /* fast model: sprites in range per evaluation line (saturated at 255) */
     uint8_t  lt_idx[240][8];          /* first 8 sprites (OAM index) in range per evaluation line (valid when lt_full) */
     int16_t  lt_ocx[240];             /* dot (cx) at which the sprite overflow flag is set on this evaluation line: 0 none, -1 not computed yet */
+    int      ar_on;                   /* the scene log of arender is being recorded for this frame */
     int      fp;                      /* this instance is driven by the fast model (the OAM address during sprite evaluation is then computed on demand) */
     int16_t  oa_line; uint8_t oa_start;
     int      lt_valid, lt_full, lt_large;  /* tables above built for the current OAM / sprite size (oam_dirty clears lt_valid) */

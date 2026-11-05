@@ -4,6 +4,7 @@
  *   the NMI line is sampled at the end of every cycle, an edge sets needNmi, the CPU takes the NMI after an instruction whose
  *   last cycle is L iff needNmi was set at the end of cycle <= L-1. */
 #include "rt.h"
+#include "arender.h"
 Rt rt;
 Apu rt_apu;
 #ifdef AMIGA
@@ -49,7 +50,7 @@ int rt_fast_ppu=1;     /* 1: closed-form PPU model (ppu_fp_run); 0: the per-dot 
 #include <stdio.h>
 #include <stdlib.h>
 extern int ppu_noinput;
-Nes nes_ref; int rt_ppu_check; long rt_chk_n;
+Nes nes_ref; int rt_ppu_check; long rt_chk_n; long ar_chk_frames, ar_chk_exact;
 static void chk_fail(const char*what,const char*field,long a,long b){
     Ppu*p=&nes.ppu; fprintf(stderr,"PPU_CHECK FAIL (%s): %s fast=%ld ref=%ld at frame %u line %d cx %d dots %llu cyc %llu (check #%ld)\n",what,field,a,b,p->frame,p->line,p->cx,(unsigned long long)p->dots,(unsigned long long)rt.cyc,rt_chk_n); exit(4);
 }
@@ -80,6 +81,13 @@ static void rt_sync(uint64_t dots){
         { extern uint64_t ppu_predict_hit(Nes*); static uint64_t last; uint64_t h=ppu_predict_hit(&nes); if(h) last=h; }
 #endif
         if(p->nmi_level!=before) q_push(sample_cycle_for_dots(p->dots), 2*p->dots, p->nmi_level);
+        if(p->frame_done && p->ar_on){      /* the scene log of the finished frame becomes the planar picture */
+            p->ar_on=0; ar_end_frame(&nes,&ar_out);
+#ifndef AMIGA
+            if(rt_ppu_check){ static uint8_t fbx[240*256]; ar_expand(&ar_out,fbx); extern long ar_chk_frames, ar_chk_exact; ar_chk_frames++; for(int y=0;y<240;y++) ar_chk_exact+=ar_scene.exact[y]; if(getenv("ARDBG")){ int ne=0; for(int y=0;y<240;y++) ne+=ar_scene.exact[y]; fprintf(stderr,"frame %u regions %d exact %d\n",p->frame,ar_scene.nreg,ne); }
+                for(int i=0;i<240*256;i++) if(fbx[i]!=(uint8_t)nes_ref.ppu.fb[i]){ fprintf(stderr,"ARENDER FAIL: frame %u row %d x %d: planar %02x ref %02x (regions %d, exact rows %d, overflow %d)\n",p->frame,i>>8,i&255,fbx[i],(unsigned)nes_ref.ppu.fb[i],ar_scene.nreg,(int)ar_chk_exact,ar_scene.overflow); exit(5); } }
+#endif
+        }
         if(p->frame_done){ p->frame_done=0; rt.frames_done++; if(rt.frame_hook) rt.frame_hook(rt.frames_done-1); }
     }
 }
@@ -166,6 +174,7 @@ static void process_dma(uint16_t read_addr){
                 if(fast && rt.dma_on){   /* the remaining pairs of get/put cycles in one go: bytes ra..255 of the RAM page into OAM at the OAM address, 2 cycles each */
                     const uint8_t*src=nes.ram+((rt.dma_page<<8)&0x7FF); unsigned oa=p->oamaddr; uint8_t*oam=p->oam; unsigned i=ra;
                     for(;i<256;i++){ uint8_t b=src[i]; if((oa&3)==2) b&=0xE3; oam[oa]=b; oa=(oa+1)&255; }
+                    if(p->ar_on && p->line>=0 && p->line<240) ar_scene.overflow=1;
                     p->oamaddr=(uint8_t)oa; p->oam_dirty=1; p->openbus=src[255]; rt.cyc+=2u*(256-ra); rt.dma_on=0; rt_sync(3*rt.cyc+4);
                 }
             }

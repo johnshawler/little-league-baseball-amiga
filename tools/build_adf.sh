@@ -58,7 +58,7 @@ python3 tools/gen_tabsp.py $B/tab.s $B/tabsp.s
 python3 tools/gen_palette.py $B/palette.inc
 $AS $B/code.s -o $B/code.o; $AS $B/tabsp.s -o $B/tabsp.o; $AS $R/rt_x.s -o $B/rt_x_s.o
 # 2. runtime
-for f in rt_core rt_x cpu6502 ppu_ref mapper_mmc1 apu; do $CC $RTFLAGS -c $R/$f.c -o $B/$f.o; done
+for f in rt_core rt_x cpu6502 ppu_ref arender mapper_mmc1 apu; do $CC $RTFLAGS -c $R/$f.c -o $B/$f.o; done
 # 3. platform
 for f in main display audio platform telem libc tabs palette; do $CC $CFLAGS -I$P -I$B -I$R -c $P/$f.c -o $B/$f.o; done
 $CC -m68020 $AS5 -x assembler -c $P/c2p.s -o $B/c2p.o; $CC -m68020 -x assembler -c $P/crt0.s -o $B/crt0.o
@@ -68,7 +68,7 @@ $LD -e 0 -Ttext=0 --oformat=binary -o $B/boot.bin $B/boot_o.o
 [ $(stat -c %s $B/boot.bin) -le 1024 ] || { echo "bootblock > 1024 bytes"; exit 1; }
 # 4. link
 LIBGCC=$($CC -m68020 -print-libgcc-file-name)
-$LD -T $P/$LDS -Map=$B/llb.map -o $B/llb.elf $B/crt0.o $B/code.o $B/rt_x_s.o $B/rt_x.o $B/rt_core.o $B/ppu_ref.o $B/cpu6502.o $B/mapper_mmc1.o $B/apu.o \
+$LD -T $P/$LDS -Map=$B/llb.map -o $B/llb.elf $B/crt0.o $B/code.o $B/rt_x_s.o $B/rt_x.o $B/rt_core.o $B/ppu_ref.o $B/arender.o $B/cpu6502.o $B/mapper_mmc1.o $B/apu.o \
    $B/c2p.o $B/display.o $B/main.o $B/audio.o $B/platform.o $B/telem.o $B/isr.o $B/libc.o $B/tabs.o $B/palette.o $B/tabsp.o $B/rom.o $SNAPOBJ $LIBGCC
 ${PREFIX}objcopy -O binary $B/llb.elf $B/llb.bin
 # 5. put the ROM (PRG then CHR, without the iNES header) into the .rom placeholder and build the disk

@@ -44,7 +44,6 @@ typedef struct {
     uint8_t  pal[32];              /* palette RAM at the start of the region (palette writes inside a region split it) */
 } ArRegion;
 
-typedef struct { int16_t y; } ArExact; /* line y comes from the chunky frame buffer row (nes.ppu.fb), see ar_log_exact */
 
 typedef struct {
     ArRegion reg[AR_MAX_REGIONS]; int nreg;
@@ -63,6 +62,6 @@ void ar_begin_frame(Nes *n);
 void ar_log_region(Nes *n, const ArRegion *r);    /* appends; merges with the previous region when the parameters match and the progression continues */
 void ar_log_exact(Nes *n, int y);
 void ar_end_frame(Nes *n, ArFrame *out);
-void ar_expand(const ArFrame *f, const ArScene *s, const uint8_t *chunky_exact, uint8_t *fb);   /* host: planar -> palette index per pixel */
-extern ArScene ar_scene;
+void ar_expand(const ArFrame *f, uint8_t *fb);    /* host: planar -> palette index per pixel (240*256 bytes), compared with the reference frame buffer */
+extern ArScene ar_scene; extern ArFrame ar_out; extern int ppu_ar_enable;   /* ar_out: result of the last frame rendered while ppu_ar_enable != 0 */
 #endif
